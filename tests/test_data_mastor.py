@@ -1,8 +1,8 @@
-from math import isclose
-from functools import partial
-from typing_extensions import assert_never
+from __future__ import annotations
 
-import numpy as np
+from functools import partial
+from math import isclose
+
 import pandas as pd
 import pytest
 from sklearn.datasets import load_digits
@@ -44,7 +44,8 @@ def test_subset_indices(digits):
     is_close_enough = partial(isclose, abs_tol=0.05)
     are_close = list(map(is_close_enough, vc.to_list(), vc_subset.tolist()))
 
-    assert(False not in are_close)
+    assert False not in are_close
+
 
 if __name__ == "__main__":
     print("Name:", __name__)
