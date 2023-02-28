@@ -6,15 +6,18 @@ authors = ["Nikolaos Vyzas <nbyzas@gmail.com>"]
 
 [tool.poetry.dependencies]
 python = "^3.9"
-pandas = "^1.4.2"
-scikit-learn = "^1.1.1"
+pandas = "^1.5.3"
+scikit-learn = "^1.2.1"
+mlflow = "^2.1.1"
+ray = "^2.2.0"
 
 [tool.poetry.dev-dependencies]
-pytest = "^7.1.2"
-ipykernel = "^6.13.1"
-mypy = "^0.961"
-pre-commit = "^2.20.0"
-pandas-stubs = {version = "^1.4.3", python = ">=3.9,<3.11"}
+pytest = "^7.2.1"
+ipykernel = "^6.21.2"
+mypy = "^1.0.0"
+pre-commit = "^3.0.4"
+pandas-stubs = {version = "^1.5.3.230214", python = ">=3.9,<3.11"}
+black = "^23.1.0"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -33,5 +36,6 @@ append_only = true
 [[tool.mypy.overrides]]
 module = [
     "sklearn.*",
+    "mlflow.*",
 ]
 ignore_missing_imports = true
