@@ -1,3 +1,11 @@
 [flake8]
 max-line-length = 88
-extend-ignore = E203
+extend-ignore =
+    # whitespace before :
+    # E203,
+
+    # module imported but not used
+    F401,
+
+    # local variable assigned but not used
+    F841,
