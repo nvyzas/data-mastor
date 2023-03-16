@@ -1588,14 +1588,14 @@ traitlets = "*"
 
 [[package]]
 name = "mlflow"
-version = "2.2.0"
+version = "2.2.2"
 description = "MLflow: A Platform for ML Development and Productionization"
 category = "main"
 optional = false
 python-versions = ">=3.8"
 files = [
-    {file = "mlflow-2.2.0-py3-none-any.whl", hash = "sha256:83e13eb14ee423271cf28b65adf296dceb3062adadd99fb63ed3462bce2588a9"},
-    {file = "mlflow-2.2.0.tar.gz", hash = "sha256:ad7a2c4fa561fe0c852f296c2cd3739083825ac44c48d44358433abe397e306b"},
+    {file = "mlflow-2.2.2-py3-none-any.whl", hash = "sha256:b501278bc68db40febd3d578dd514d34a745f515d2042c04d046db2821fb613e"},
+    {file = "mlflow-2.2.2.tar.gz", hash = "sha256:3ef2c2ee20c9a7adedff34e756c6edac62cf4d905765ad0e8074bc9daa0c580c"},
 ]
 
 [package.dependencies]
