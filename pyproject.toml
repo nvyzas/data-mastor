@@ -6,7 +6,7 @@ authors = ["Nikolaos Vyzas <nbyzas@gmail.com>"]
 
 [tool.poetry.dependencies]
 python = "~3.10" # click does not support 3.11
-pandas = "^1.5.3"
+pandas = "^2.0.0"
 scikit-learn = "^1.2.2"
 mlflow = "^2.2.2"
 ray = "^2.3.1"
