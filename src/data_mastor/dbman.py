@@ -1,0 +1,237 @@
+import os
+import re
+import shutil
+from datetime import datetime
+from pathlib import Path
+
+import pandas as pd
+import typer
+from deepdiff import DeepDiff
+from sqlalchemy import MetaData, create_engine
+
+from data_mastor.cliutils import get_yamldict_key
+from data_mastor.scraper.models import Base
+
+# typer app
+app = typer.Typer(invoke_without_command=True)
+
+# engine
+_engine = None
+
+
+def get_db_url():
+    return os.environ["DB_URL"]
+
+
+def get_engine():
+    global _engine
+    if _engine is None:
+        _engine = create_engine(get_db_url())
+    return _engine
+
+
+# now utility function
+def _now():
+    return datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+
+# DATABASE MANAGEMENT
+
+
+def get_tables_metadata(metadata_obj: MetaData) -> dict[str, dict[str, str]]:
+    ret = {}
+    tablesdict = metadata_obj.tables
+    for tablename, table in tablesdict.items():
+        ret[tablename] = {col.name: str(col.type) for col in table.columns}
+    return ret
+
+
+@app.command(name="printschema")
+def print_tables_metadata():
+    engine = get_engine()
+    db_metadata = MetaData()
+    db_metadata.reflect(bind=engine)
+    db_md = get_tables_metadata(db_metadata)
+    print(db_md)
+
+
+@app.command()
+def migrate(yamlconf_file: Path = Path("conf.yml")):
+    """Helper for database migration/creation.
+
+    Useful for databases with limited migration capabilities e.g., sqlite.\n
+    Supported operations:\n
+    - table rename -> use conf.yml:renames:oldtablename:oldtablename:newtablename\n
+    - column rename -> use conf.yml:renames:tablename:oldcolumnname:newcolumnname\n
+    - table removal -> detected automatically by comparing db with this file\n
+    - column removal -> detected automatically by comparing db with this file\n
+    - table add -> handled by metadata.create_all\n
+    - column add -> handled metadata.create_all\n
+    - table change constraints -> handled by metadata.create_all\n
+    - column change type -> handled by metadata.create_all\n
+    For other kinds of operations:\n
+    https://alembic.sqlalchemy.org/en/latest/autogenerate.html
+    """
+    # parse args
+    args = get_yamldict_key(yamlconf_file, "db")
+    renames = args.get("renames", {}) or {}
+    dont_store = args.get("dont_store", True) or True
+    args_dict = {"renames": renames, "dont_store": dont_store}
+    print(f"Args: {args_dict}")
+
+    # determine db path
+    db_url = get_db_url()
+    if db_url.startswith("sqlite:///"):
+        sqlite_db_path = db_url.replace("sqlite:///", "", count=1)
+    else:
+        raise RuntimeError
+
+    # create engine
+    engine = get_engine()
+
+    # SCENARIO 1: create new blank db
+    if not Path(sqlite_db_path).exists():
+        Base.metadata.create_all(engine)
+        print(f"Created database: {db_url}")
+        return
+
+    # get db tables
+    db_metadata = MetaData()
+    db_metadata.reflect(bind=engine)
+    db_md = get_tables_metadata(db_metadata)
+
+    # SCENARIO 2: recreate blank db (with the most recent schema)
+    if not db_md:
+        Base.metadata.drop_all(engine)
+        Base.metadata.create_all(engine)
+        print(f"Recreated empty database {db_url}")
+        return
+
+    # SCENARIO 3: recreate db using data from old db
+
+    # check diffs
+    sc_md = get_tables_metadata(Base.metadata)
+    diff = DeepDiff(
+        db_md, sc_md, ignore_order=True, exclude_paths=["root['alembic_version']"]
+    )
+    print("Diffs of existing db vs file schema:")
+    print(diff.pretty())
+    if not diff:
+        print("There are no diffs. Exiting.")
+        return
+
+    # determine removed tables/columns
+    removed_tables = set()
+    removed_columns = {}
+    for item in diff["dictionary_item_removed"]:
+        parts = re.findall(r"\[(.*?)\]", item)
+        if len(parts) == 1:
+            table = parts[0].replace("'", "")
+            if table in renames and table in renames[table]:
+                print(f"Table '{table}' will be renamed to {renames[table]}")
+            else:
+                removed_tables.add(table)
+                print(f"Table '{table}' will be removed")
+        elif len(parts) == 2:
+            table = parts[0].replace("'", "")
+            col = parts[1].replace("'", "")
+            if table in renames and col in renames[table]:
+                newcol = renames[table][col]
+                print(f"Column '{col}' of table '{table}' will be renamed to {newcol}")
+            else:
+                removed = removed_columns.setdefault(table, set())
+                removed.add(col)
+                print(f"Column '{col}' of table '{table}' will be removed")
+        else:
+            raise RuntimeError(f"Unexpected length of diff parts: {parts}")
+
+    # store existing table data first, so that next steps don't run in case of error
+    print("Storing existing data")
+    data = {}
+    for tname in db_md:
+        if tname == "alembic_version":
+            print(f"Skipping table '{tname}'")
+            continue
+        # check if table is marked as removed
+        if tname in removed_tables:
+            print(f"Skipping removed table '{tname}'")
+            continue
+        # check renames for the specific table
+        table_renames = renames.pop(tname, {})
+        new_tname = table_renames.pop(tname, tname)
+        renamed_to = " " if tname == new_tname else f" (renamed to '{new_tname}') "
+        # make sure tablename is a string (in case of rename)
+        if not isinstance(new_tname, str):
+            print(f"New tablename should be a string, not {type(new_tname)}")
+        # make sure table exists in the new schema
+        if new_tname not in sc_md:
+            raise ValueError(f"Table '{tname}'{renamed_to}not in schema")
+        # determine included columns (those that were not removed)
+        included_cols = db_md[tname].keys() - removed_columns.get(tname, {})
+        # determine datetime columns
+        date_cols = [
+            col
+            for col, coltype in db_md[tname].items()
+            if col in included_cols and coltype == "DATETIME"
+        ]
+        # read data
+        df = pd.read_sql_table(tname, engine, parse_dates=date_cols)
+        # keep only included columns
+        df = df[list(included_cols)]
+        if df.empty:
+            print(f"Skipping empty table '{tname}'")
+            continue
+        # handle column renames
+        column_renames = {k: v for k, v in table_renames.items()}
+        if column_renames:
+            df.rename(columns=column_renames, inplace=True)
+        # store data to dict
+        data[new_tname] = df
+        num_cols = len(df.columns)
+        print(f"Stored data ({num_cols} columns) of table '{tname}'{renamed_to}")
+    print(f"Unused renames from yaml: {renames}")
+
+    # backup
+    backup_dirpath = Path("backup")
+    backup_filename = sqlite_db_path.split(".")[0] + "_" + _now() + ".bak.db"
+    backup_filepath = backup_dirpath / backup_filename
+    shutil.copy2(sqlite_db_path, backup_filepath)
+    print(f"Created database backup: {str(backup_filepath.absolute())}")
+
+    # recreate
+    Base.metadata.drop_all(engine)
+    Base.metadata.create_all(engine)
+    print(f"Recreated database: {sqlite_db_path}")
+
+    # load data using the new schema
+    exc_occured = False
+    for tname, df in data.items():
+        if tname == "alembic_version":
+            continue
+        try:
+            df.to_sql(tname, engine, index=False, if_exists="append")
+        except Exception as exc:
+            exc_occured = True
+            print(f"Failed to restore data into table '{tname}' due to {exc}")
+            break
+        print(f"Successfully restored data into table '{tname}'")
+
+    if exc_occured:
+        error_filepath = backup_filepath.with_stem(backup_filepath.stem + ".err")
+        shutil.move(sqlite_db_path, error_filepath)
+        shutil.move(backup_filepath, sqlite_db_path)
+        print("Replaced database with the backup because an exception occured")
+        print(f"Erroneous database path: '{error_filepath}'")
+        return
+
+    if dont_store:
+        dryrun_filepath = backup_filepath.with_stem(backup_filepath.stem + ".dr")
+        shutil.move(sqlite_db_path, dryrun_filepath)
+        shutil.move(backup_filepath, sqlite_db_path)
+        print("Replaced database with the backup because it's a dry-run")
+        print(f"Dry-run database path: '{dryrun_filepath}'")
+        return
+
+
+if __name__ == "__main__":
+    app()
