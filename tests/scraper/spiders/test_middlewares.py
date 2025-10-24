@@ -15,12 +15,7 @@ from data_mastor.scraper.spiders import Baze
 from data_mastor.scraper.utils import abort
 
 
-@pytest.fixture
-def yamlconf():
-    return {}
-
-
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="module")  # module scope to prevent creation of many temp files
 def spidercls():
     fp = tempfile.NamedTemporaryFile("r")
     Baze._spiderargs["url"] = f"file://{fp.name}"
@@ -29,31 +24,13 @@ def spidercls():
 
 
 @pytest.fixture
-def mock_nonlocal_mode(spidercls, mocker: MockerFixture):
-    mock = mocker.patch.object(
-        spidercls, spidercls.local_mode.__name__, new_callable=PropertyMock
-    )
-    mock.return_value = False
-    return mock
+def yamlargs():
+    return {}
 
 
 @pytest.fixture(autouse=True)
-def mock_parse(spidercls, mocker: MockerFixture):
-    def parse(self, response):
-        yield self, response
-
-    mock = mocker.patch.object(spidercls, "parse", parse)
-    return mock
-
-
-@pytest.fixture
-def mock_interface_ip(mocker: MockerFixture) -> MagicMock:
-    return mocker.patch("data_mastor.scraper.middlewares._interface_ip")
-
-
-@pytest.fixture
-def mock_interface_is_up(mocker: MockerFixture) -> MagicMock:
-    return mocker.patch("data_mastor.scraper.middlewares._interface_is_up")
+def configure_spidercls(configure_spidercls):
+    pass
 
 
 @pytest.fixture(params=["uatestY", "uatestN"])
@@ -76,6 +53,34 @@ def env_allowed_interface(request):
     os.environ[ENVVAR_ALLOWED_INTERFACE] = (
         "allowedinterface" if request.param == "allowedinterfaceY" else ""
     )
+
+
+@pytest.fixture
+def mock_nonlocal_mode(spidercls, mocker: MockerFixture):
+    mock = mocker.patch.object(
+        spidercls, spidercls.local_mode.__name__, new_callable=PropertyMock
+    )
+    mock.return_value = False
+    return mock
+
+
+@pytest.fixture(autouse=True)
+def mock_parse(spidercls, mocker: MockerFixture):
+    def parse(self, response):
+        yield self, response
+
+    mock = mocker.patch.object(spidercls, spidercls.parse.__name__, parse)
+    return mock
+
+
+@pytest.fixture
+def mock_interface_ip(mocker: MockerFixture) -> MagicMock:
+    return mocker.patch("data_mastor.scraper.middlewares._interface_ip")
+
+
+@pytest.fixture
+def mock_interface_is_up(mocker: MockerFixture) -> MagicMock:
+    return mocker.patch("data_mastor.scraper.middlewares._interface_is_up")
 
 
 @pytest.fixture(params=["leaksY", "leaksN"])

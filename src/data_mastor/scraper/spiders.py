@@ -6,10 +6,6 @@ from typing import Annotated, Any, TypeGuard
 import typer
 import yaml
 from click.core import ParameterSource
-from data_mastor.cliutils import Opt, parse_yamlargs, yaml_get
-from data_mastor.scraper.middlewares import PrivacyCheckerDLMW, ResponseSaverDLMW
-from data_mastor.scraper.pipelines import ListingStorer, SourceStorer
-from data_mastor.scraper.utils import DLMW_KEY, DLMWBASE_KEY, between_middlewares
 from rich import print
 from scrapy import Spider
 from scrapy.crawler import CrawlerProcess
@@ -17,6 +13,11 @@ from scrapy.exceptions import CloseSpider
 from scrapy.http import Response
 from scrapy.settings import SETTINGS_PRIORITIES, Settings
 from scrapy.utils.project import get_project_settings
+
+from data_mastor.cliutils import Opt, parse_yamlargs, yaml_get
+from data_mastor.scraper.middlewares import PrivacyCheckerDLMW, ResponseSaverDLMW
+from data_mastor.scraper.pipelines import ListingStorer, SourceStorer
+from data_mastor.scraper.utils import DLMW_KEY, DLMWBASE_KEY, between_middlewares
 
 LATIN_ALPHABET = "AaBbGgDdEeZzHhJjIiKkLlMmNnXxOoPpRrSssTtUuFfQqYyWw"
 
@@ -234,7 +235,6 @@ class Baze(Spider):
         dlmw[PrivacyCheckerDLMW] = pos
         if spider.save_html:
             dlmw[ResponseSaverDLMW] = 950
-        print(f"Custom download middleware: {dlmw}")
 
         # effectively disable OffsiteDownloadMiddleware if scraping locally
         if spider._local_mode:
