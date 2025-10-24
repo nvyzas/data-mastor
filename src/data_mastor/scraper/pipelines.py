@@ -1,4 +1,5 @@
 import json
+import logging
 from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
@@ -108,9 +109,21 @@ class Storer:
 
 
 class ListingStorer(Storer):
-    def __init__(self, **kwargs):
+    def __init__(self, entitycls: type | None = None, **kwargs):
         super().__init__(**kwargs)
+        # default to the Listing model if no explicit class is provided
+        self.entitycls: type = Listing
         self.products = pd.read_sql_table(Product.__tablename__, self.engine)
+
+    @classmethod
+    def from_crawler(cls, crawler):
+        storer = super().from_crawler(crawler)
+        entitycls = crawler.settings.get("LISTING_CLASS", None)
+        if entitycls is not None:
+            storer.entitycls = entitycls
+        else:
+            logging.getLogger("crawler").warning(f"Using default entitycls {Listing}")
+        return storer
 
     def process_item(self, item: ListingItem, spider: Spider):
         # create copy to be returned
@@ -126,7 +139,7 @@ class ListingStorer(Storer):
         spider.logger.debug(f"Item diff: {DeepDiff(asdict(item), asdict(it))}")
 
         # create listing object
-        listing = Listing(**asdict(it))
+        listing = self.entitycls(**asdict(it))
 
         # add timestamp
         listing.created_at = self.now
@@ -157,9 +170,9 @@ class SourceStorer(Storer):
                 parent = parents[0]
         # check
         if parent_url and parent is None:
-            raise DropItem(f"Could not find parent for {item}")
+            raise DropItem(f"Could not find parent for {it}")
         if it.level > 0 and parent is None:
-            raise DropItem(f"{item} has non-zero level and no parent")
+            raise DropItem(f"{it} has non-zero level and no parent")
 
         # create source item
         src = Source(**asdict(it))

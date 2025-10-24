@@ -46,6 +46,7 @@ def yamlargs():
 @pytest.fixture
 def yamlconfmock(mocker: MockerFixture, yamlargs):
     mock: MagicMock = mocker.patch("data_mastor.cliutils.yaml_get")
+    mock.return_value = yamlargs
     yield mock
     mock.assert_called_once()
 
