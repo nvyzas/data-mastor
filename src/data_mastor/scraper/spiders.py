@@ -16,7 +16,7 @@ from scrapy.utils.project import get_project_settings
 
 from data_mastor.cliutils import Opt, parse_yamlargs, yaml_get
 from data_mastor.scraper.middlewares import PrivacyCheckerDLMW, ResponseSaverDLMW
-from data_mastor.scraper.pipelines import ListingStorer, SourceStorer
+from data_mastor.scraper.pipelines import TIMESTAMP_FMT, ListingStorer, SourceStorer
 from data_mastor.scraper.utils import DLMW_KEY, DLMWBASE_KEY, between_middlewares
 
 LATIN_ALPHABET = "AaBbGgDdEeZzHhJjIiKkLlMmNnXxOoPpRrSssTtUuFfQqYyWw"
@@ -31,7 +31,7 @@ def set_timestamp():
     global timestamp
     if timestamp != "":
         raise RuntimeError(f"Timestamp ({timestamp}) is supposed to be set only once!")
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    timestamp = datetime.now().strftime(TIMESTAMP_FMT)
 
 
 set_timestamp()

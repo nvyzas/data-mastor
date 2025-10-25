@@ -21,33 +21,46 @@ from data_mastor.scraper.models import (
 from data_mastor.scraper.schemas import ListingItem, SourceItem
 from data_mastor.scraper.utils import abort
 
+TIMESTAMP_FMT = "%Y-%m-%d_%H-%M-%S"
+
 
 # TODO make it into a generic class
-class Storer:
-    def __init__(self, now: datetime | None = None, dont_store: bool = False):
-        self.now = datetime.now() if now is None else now
+class Storer[TEntity: Listing | Source, TItem: ListingItem | SourceItem]:
+    def __init__(
+        self,
+        entitycls: type[TEntity],
+        now: str | None = None,
+        dont_store: bool = False,
+    ) -> None:
+        self.now = datetime.strptime(now, TIMESTAMP_FMT) if now else datetime.now()
         self.dont_store = dont_store
+        self.entitycls = entitycls
+        if not issubclass(self.entitycls, (Listing, Source)):
+            raise TypeError(f"self.entitycls ({self.entitycls}) is not Listing/Source")
         # db session
-        self.added = []
-        self.deleted = []
-        self.engine = get_engine()
-        Session = sessionmaker(bind=self.engine)
-        self.session = Session()
+        self._added: list[TEntity] = []
+        self._deleted: list[TEntity] = []
+        self._engine = get_engine()
+        self._session = sessionmaker(bind=self._engine)()
 
+    # meant to be called only by a Storer subclass, not (directly) by scrapy
     @classmethod
-    def from_crawler(cls, crawler):
+    def from_crawler(cls, crawler, entitycls: type[TEntity] | None = None):
+        if entitycls is None:
+            raise TypeError("entitycls is None")
         return cls(
+            entitycls,
             now=crawler.settings.get("NOW"),
             dont_store=crawler.settings.get("DONT_STORE"),
         )
 
     def _add_to_session(self, entity, spider: Spider):
         try:
-            self.session.add(entity)
+            self._session.add(entity)
         except Exception as exc:
             abort(spider, exc, self.close_spider)
         else:
-            self.added.append(entity)
+            self._added.append(entity)
 
     def _process_samples(self, spider: Spider):
         # get samples
@@ -61,71 +74,71 @@ class Storer:
                 self.process_item(item, spider)
             except Exception as exc:
                 abort(spider, exc)
+        spider.logger.info("Testsamples were processed without errors")
         # purge session state (removing the sample items)
-        self.session.expunge_all()
-        self.added = []
+        self._session.expunge_all()
+        self._added = []
+
+    def _log_num_entities(self, spider: Spider):
+        num = self.entitycls.num_entities(self._session)
+        spider.logger.info(f"Number of entities on pipeline start: {num}")
 
     def open_spider(self, spider: Spider):
         spider.logger.debug(f"Running {type(self).__name__} open_spider")
-
-        # print num entities # TODO: fix
-        # num = num_entities(self.session, spider.itemcls())
-        # print(f"Number of entities on pipeline start: {num}")
+        self._log_num_entities(spider)
 
         # simulate item processing using samples (before doing the actual scraping)
         self._process_samples(spider)
 
     def close_spider(self, spider: Spider):
         spider.logger.debug(f"Running {type(self).__name__} close_spider")
-        added = "\n".join(map(str, self.added))
-        deleted = "\n".join(map(str, self.deleted))
-        spider.logger.info(f"Added: {added}")
-        spider.logger.info(f"Deleted: {deleted}")
+        self._log_num_entities(spider)
+        spider.logger.info(f"Added {len(self._added)} items")
+        spider.logger.info(f"Deleted {len(self._deleted)} items")
         if self.dont_store:
             try:
-                self.session.flush()
+                self._session.flush()
             except Exception as exc:
-                spider.logger.error(f"Session flush failed with {exc}")
+                abort(spider, exc)
             else:
                 spider.logger.info("Session flush was successful")
+            finally:
+                self._session.rollback()
         else:
             try:
-                self.session.commit()
+                self._session.commit()
             except Exception as exc:
-                spider.logger.error(exc)
-                spider.logger.info(f"Session commit failed with {exc}")
-                self.session.rollback()
+                self._session.rollback()
+                abort(spider, exc)
             else:
                 spider.logger.info("Session commit was successful")
 
         # print num entities # TODO: fix
         # num = num_entities(self.session, spider.itemcls())
-        # print(f"Number of entities on pipeline end: {num}")
+        # print(f"Number of stored {entitycls} on pipeline end: {num}")
 
-        self.session.close()
+        self._session.close()
 
-    def process_item(self, item, spider):
+    def process_item(self, item: TItem, spider: Spider) -> TItem:
+        """Process an item; subclasses must return the original item instance
+        (ListingItem or SourceItem)."""
         raise NotImplementedError
 
 
-class ListingStorer(Storer):
-    def __init__(self, entitycls: type | None = None, **kwargs):
-        super().__init__(**kwargs)
-        # default to the Listing model if no explicit class is provided
-        self.entitycls: type = Listing
-        self.products = pd.read_sql_table(Product.__tablename__, self.engine)
+class ListingStorer(Storer[Listing, ListingItem]):
+    def __init__(self, entitycls: type[Listing], **kwargs):
+        super().__init__(entitycls, **kwargs)
+        self.products = pd.read_sql_table(Product.__tablename__, self._engine)
 
+    # entitycls arg is included just for conformity with signature of base method
     @classmethod
-    def from_crawler(cls, crawler):
-        storer = super().from_crawler(crawler)
-        entitycls = crawler.settings.get("LISTING_CLASS", None)
-        if entitycls is not None:
-            storer.entitycls = entitycls
-        else:
-            logging.getLogger("crawler").warning(f"Using default entitycls {Listing}")
-        return storer
+    def from_crawler(cls, crawler, entitycls: type[Listing] | None = None):
+        entitycls_ = crawler.settings.get("LISTING_CLASS", Listing)
+        if entitycls_ == Listing:
+            logging.getLogger("crawler").warning(f"Using default entitycls: {Listing}")
+        return super().from_crawler(crawler, entitycls=entitycls_)
 
-    def process_item(self, item: ListingItem, spider: Spider):
+    def process_item(self, item: ListingItem, spider: Spider) -> ListingItem:
         # create copy to be returned
         it = replace(item)
 
@@ -150,7 +163,7 @@ class ListingStorer(Storer):
 
 
 class SourceStorer(Storer):
-    def process_item(self, item: SourceItem, spider: Spider):
+    def process_item(self, item: SourceItem, spider: Spider) -> SourceItem:
         # create copy to be returned
         it = replace(item)
 
@@ -161,7 +174,7 @@ class SourceStorer(Storer):
         if parent_url:
             parents = [
                 src
-                for src in self.session.new
+                for src in self._session.new
                 if getattr(src, Source.url.key) == parent_url
             ]
             if len(parents) > 1:
@@ -180,8 +193,8 @@ class SourceStorer(Storer):
         src.created_at = self.now
 
         # add item
-        self.session.add(src)
-        self.added.append(src)
+        self._session.add(src)
+        self._added.append(src)
 
         # return item
         return item
