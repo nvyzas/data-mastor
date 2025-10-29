@@ -29,9 +29,9 @@ class Base(MappedAsDataclass, DeclarativeBase):
         diff = DeepDiff(asdict(self_copy), asdict(self), exclude_paths=excl)
         return diff
 
-
-def num_entities(session, entitycls: type[Base]):
-    return len(session.scalars(select(entitycls)).all())
+    @classmethod
+    def num_entities(cls, session):
+        return len(session.scalars(select(cls)).all())
 
 
 sources_to_tags = Table(
