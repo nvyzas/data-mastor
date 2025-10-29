@@ -201,7 +201,7 @@ class Listing(Base):
         ForeignKey(Product.id, onupdate="CASCADE", ondelete="SET NULL"), init=False
     )
     # price
-    price: Mapped[float] = mapped_column(Float, nullable=True, init=True)
+    price: Mapped[float | None] = mapped_column(Float, nullable=True, init=True)
 
     # constraint
     __table_args__ = (

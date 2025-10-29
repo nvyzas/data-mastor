@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pandas as pd
 import typer
-from deepdiff import DeepDiff
 from scrapy import Spider
 from scrapy.exceptions import DropItem
 from sqlalchemy.orm import sessionmaker
@@ -78,6 +77,7 @@ class Storer[TEntity: Listing | Source, TItem: ListingItem | SourceItem]:
         # purge session state (removing the sample items)
         self._session.expunge_all()
         self._added = []
+        # TODO: also test session flush/commit
 
     def _log_num_entities(self, spider: Spider):
         num = self.entitycls.num_entities(self._session)
@@ -126,7 +126,7 @@ class Storer[TEntity: Listing | Source, TItem: ListingItem | SourceItem]:
 
 
 class ListingStorer(Storer[Listing, ListingItem]):
-    def __init__(self, entitycls: type[Listing], **kwargs):
+    def __init__(self, entitycls: type[Listing] = Listing, **kwargs):
         super().__init__(entitycls, **kwargs)
         self.products = pd.read_sql_table(Product.__tablename__, self._engine)
 
@@ -138,31 +138,44 @@ class ListingStorer(Storer[Listing, ListingItem]):
             logging.getLogger("crawler").warning(f"Using default entitycls: {Listing}")
         return super().from_crawler(crawler, entitycls=entitycls_)
 
-    def process_item(self, item: ListingItem, spider: Spider) -> ListingItem:
-        # create copy to be returned
-        it = replace(item)
+    def mapper(self, item: ListingItem):
+        # parse price attributes from item
+        def parse_price(price: str | None) -> float | None:
+            if price is None:
+                return None
+            return float(price.replace("€", "").replace(",", ".").strip())
 
-        # format price # TODO be able to process more price fields (via init arg?)
-        def cure_price(price):
-            return price.replace("€", "").replace(",", ".").strip() if price else price
+        price_data = {}
+        for attr in item.get_price_attrs():
+            price_data[attr] = parse_price(getattr(item, attr))
 
-        it.price = cure_price(it.price)
+        # create the listing
+        listing = self.entitycls(item.text, **price_data)
 
-        # log differences after processing
-        spider.logger.debug(f"Item diff: {DeepDiff(asdict(item), asdict(it))}")
-
-        # create listing object
-        listing = self.entitycls(**asdict(it))
-
-        # add timestamp
+        # create new attributes
         listing.created_at = self.now
+
+        # return
+        return listing
+
+    def process_item(self, item: ListingItem, spider: Spider) -> ListingItem:
+        # create a copy to be returned (so that the output feeds are same as input)
+        item_ret = replace(item)
+
+        # create listing object from item
+        listing = self.mapper(item)
 
         # add to session
         self._add_to_session(listing, spider)
-        return item
+
+        # return original item
+        return item_ret
 
 
 class SourceStorer(Storer):
+    def __init__(self, entitycls: type[Source] = Source, **kwargs):
+        super().__init__(entitycls, **kwargs)
+
     def process_item(self, item: SourceItem, spider: Spider) -> SourceItem:
         # create copy to be returned
         it = replace(item)

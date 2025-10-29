@@ -51,12 +51,12 @@ class Baze(Spider):
     # serves as a single source of truth for default spiderarg/setting values
     # applied in both: scrapy crawl CLI (__init__/from_crawler), and custom CLI (_cli)
     # REFACTOR: replace specs with pydantic classes
-    sett_specs = {
+    sett_specs: dict[str, Any] = {
         "OUT_DIR": f"out/{name}/{timestamp}",
         "DONT_STORE": False,
         "NOW": timestamp,
     }
-    sparg_specs = {"url": None, "save_html": False}
+    sparg_specs: dict[str, Any] = {"url": None, "save_html": False}
 
     # default values for spiderargs (**kwargs) are defined here to stay compatible
     def __init__(self, name=None, **kwargs):
@@ -91,7 +91,7 @@ class Baze(Spider):
         print(f"Start-urls: {self.start_urls}")
 
         # make sure all local URLs point to a single directory
-        self.local_dir = None
+        self.local_dir: Path | None = None
         if self._local_mode:
             for url in self.start_urls:
                 dir = Path(url.split("file://")[-1]).parent
@@ -204,7 +204,7 @@ class Baze(Spider):
         spider.settings.update(spec_settings, priority="spider")
 
         # update with dynamic settings
-        dynamic_settings = {}
+        dynamic_settings: dict[str, Any] = {}
         out_dir = Path(spider.settings["OUT_DIR"])
         dynamic_settings["LOG_FILE"] = str(out_dir / "run.log")
         dynamic_settings["FEEDS"] = {str(out_dir / "feed.json"): {"format": "json"}}
@@ -212,11 +212,11 @@ class Baze(Spider):
         for k in dynamic_settings:
             if k in spec_settings:
                 v = spec_settings[k]
-                print(f"Dynamic setting '{k}' will be overriden by spec value {v}")
+                print(f"Dynamic setting '{k}' will be overriden by spec value '{v}'")
                 overriden.append(k)
             if spider.settings.getpriority(k) == SETTINGS_PRIORITIES["cmdline"]:
                 v = spider.settings[k]
-                print(f"Dynamic setting '{k}' will be overriden by cmdline value {v}")
+                print(f"Dynamic setting '{k}' will be overriden by cmdline value '{v}'")
                 overriden.append(k)
         [dynamic_settings.pop(k) for k in overriden]
         spider.settings.update(dynamic_settings, priority="spider")
@@ -323,11 +323,11 @@ class Baze(Spider):
         Baze._verbose_update(cls._spiderargs, dct, "specspargs")
 
     @classmethod
-    def _cli_sub(cls):
+    def _cli_sub(cls) -> None:
         raise NotImplementedError
 
     @classmethod
-    def _cli(cls):
+    def _cli(cls) -> None:
         raise NotImplementedError
 
     @classmethod

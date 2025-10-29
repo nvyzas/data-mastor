@@ -12,3 +12,7 @@ class SourceItem:
 class ListingItem:
     text: str
     price: str | None
+
+    @staticmethod
+    def get_price_attrs():
+        return ["price"]
