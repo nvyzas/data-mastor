@@ -19,13 +19,14 @@ class TestSourceStorer:
 
     def test_pipe_normal(self, session: Session, pipe: SourceStorer):
         process_items([s0, s1, s2], pipe)
-        stmt = select(Source)
-        entities = session.scalars(stmt).all()
+        entities = session.scalars(select(Source)).all()
         assert len(entities) == 3
 
-    def test_pipe_broken_hierarchy(self, pipe: SourceStorer):
+    def test_pipe_broken_hierarchy(self, session: Session, pipe: SourceStorer):
         with pytest.raises(DropItem):
             process_items([s1, s2], pipe)
+        entities = session.scalars(select(Source)).all()
+        assert len(entities) == 0
 
 
 l1 = ListingItem("text1", "1")

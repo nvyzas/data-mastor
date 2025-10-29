@@ -23,10 +23,10 @@ def get_db_url():
     return os.environ["DB_URL"]
 
 
-def get_engine():
+def get_engine(**kwargs):
     global _engine
     if _engine is None:
-        _engine = create_engine(get_db_url())
+        _engine = create_engine(get_db_url(), **kwargs)
     return _engine
 
 
