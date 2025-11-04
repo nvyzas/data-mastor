@@ -10,8 +10,6 @@ on:
   pull_request:
     paths:
       - .github/workflows/copilot-setup-steps.yml
-env:
-  UV_SYSTEM_PYTHON: 1
 jobs:
   # The job MUST be called `copilot-setup-steps` or it will not be picked up by Copilot.
   copilot-setup-steps:
@@ -31,12 +29,14 @@ jobs:
         with:
           python-version-file: ".python-version"
       # uv
-      - name: Setup uv with caching enabled
+      - name: "Setup uv with caching enabled"
         uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
           version: "0.9.7"
       - name: Install the project
-        run: uv sync --locked --all-extras --dev
+        run: uv pip install -r requirements.txt
+        env:
+          UV_SYSTEM_PYTHON: 1
       - name: Run tests
         run: pytest -q tests/scraper/test_testing.py
