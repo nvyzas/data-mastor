@@ -30,14 +30,13 @@ jobs:
           python-version-file: ".python-version"
       # uv
       - name: "Setup uv with caching enabled"
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
           version: "0.9.7"
-          activate-environment: "true"
       - name: Install the project
         run: uv sync --locked --all-extras --dev
         env:
           UV_SYSTEM_PYTHON: 1
       - name: Run tests
-        run: pytest -q tests/scraper/test_testing.py
+        run: uv run pytest -q tests/scraper/test_testing.py
