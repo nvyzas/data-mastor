@@ -23,14 +23,11 @@ jobs:
     # If you do not check out your code, Copilot will do this for you.
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - name: Setup uv with caching enabled
+        uses: astral-sh/setup-uv@v6
         with:
-          python-version-file: ".python-version"
-          cache: 'pip'
-          cache-dependency-path: requirements.txt
-      - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install -e .
-      - name: Run quick test
-        run: pytest -q tests/scraper/test_testing.py
+          enable-cache: true
+      - name: Install the project
+        run: uv sync --locked --all-extras --dev
+      - name: Run tests
+        run: uv run pytest -q tests/scraper/test_testing.py
