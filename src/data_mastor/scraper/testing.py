@@ -18,6 +18,10 @@ from data_mastor.dbman import get_engine
 from data_mastor.scraper.models import Base
 from data_mastor.scraper.spiders import USED_ARGS_FILENAME, Baze, timestamp
 
+# dummy
+importable_fixture = "dummy"
+
+
 # DATABASE
 
 
@@ -105,7 +109,7 @@ def yamlargs(spidercls: type[Baze], testcase_dir: str | Path) -> dict[str, Any]:
     return yamlargs
 
 
-@pytest.fixture(scope="function")  # make sure items_scraped is reset
+@pytest.fixture(scope="function")  # reset items_scraped after each test
 def gatherercls():
     logging.debug("Running gatherercls fixture")
 

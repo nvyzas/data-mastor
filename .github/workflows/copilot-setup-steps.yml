@@ -27,6 +27,10 @@ jobs:
         with:
           python-version-file: ".python-version"
           cache: 'pip'
-      - run: |
+          cache-dependency-path: requirements.txt
+      - name: Install dependencies
+        run: |
           pip install -r requirements.txt
           pip install -e .
+      - name: Run quick test
+        run: pytest -q tests/scraper/test_testing.py
