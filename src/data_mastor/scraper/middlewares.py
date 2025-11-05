@@ -1,6 +1,7 @@
 import os
 import socket
 import subprocess
+from pathlib import Path
 
 import psutil
 from scrapy import Request, Spider, signals
@@ -218,8 +219,6 @@ class ResponseSaverDLMW:
             )
 
         # Convert to Path if needed
-        from pathlib import Path
-
         out_dir = Path(out_dir)
 
         # Ensure directory exists
