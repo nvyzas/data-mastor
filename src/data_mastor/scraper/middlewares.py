@@ -176,10 +176,76 @@ class PrivacyCheckerDLMW:
 
 
 class ResponseSaverDLMW:
+    """Spider-agnostic middleware to save HTML responses to files.
+
+    This middleware saves HTML responses to disk without requiring a specific spider class.
+    It uses duck-typing to check for optional spider attributes and falls back to defaults.
+
+    Configuration:
+        Enable in settings.py or custom_settings:
+
+        DOWNLOADER_MIDDLEWARES = {
+            'data_mastor.scraper.middlewares.ResponseSaverDLMW': 950,
+        }
+
+        # Optional: configure output directory (default: 'out')
+        HTML_SAVE_DIR = 'path/to/output'
+
+    Spider attributes (all optional):
+        - html_save_dir: Directory to save HTML files (Path or str)
+        - html_namer: Callable that takes a response and returns filename (str)
+
+    Example spider usage:
+        class MySpider(scrapy.Spider):
+            name = 'myspider'
+
+            # Optional: custom directory
+            html_save_dir = Path('custom/output')
+
+            # Optional: custom naming function
+            def html_namer(self, response):
+                return f"{self.name}_{hash(response.url)}.html"
+    """
+
     def process_response(self, request, response: Response, spider: Spider):
         # Called with the response returned from the downloader.
-        out_dir = spider.settings["OUT_DIR"]
-        html_file = spider.html_namer(response)
+
+        # Get output directory: spider attribute > spider settings > middleware settings > default
+        out_dir = getattr(spider, "html_save_dir", None)
+        if out_dir is None:
+            out_dir = spider.settings.get("OUT_DIR") or spider.settings.get(
+                "HTML_SAVE_DIR", "out"
+            )
+
+        # Convert to Path if needed
+        from pathlib import Path
+
+        out_dir = Path(out_dir)
+
+        # Ensure directory exists
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # Get filename: use spider's html_namer if available, otherwise use default
+        html_namer = getattr(spider, "html_namer", None)
+        if html_namer and callable(html_namer):
+            html_file = html_namer(response)
+        else:
+            # Default naming: extract from URL or use hash
+            url = response.url
+            if url.startswith("file://"):
+                # For local files, use the filename
+                html_file = Path(url.replace("file://", "")).name
+            else:
+                # For web URLs, create a safe filename from the last part of URL
+                parts = url.rstrip("/").split("/")
+                filename = parts[-1] if parts else "response"
+                # Remove query parameters and ensure .html extension
+                filename = filename.split("?")[0]
+                if not filename.endswith(".html"):
+                    filename += ".html"
+                html_file = filename
+
+        # Save the response body
         with open(out_dir / html_file, "wb") as file:
             file.write(response.body)
 
