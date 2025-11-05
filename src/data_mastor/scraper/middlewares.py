@@ -87,14 +87,6 @@ class PrivacyCheckerDLMW:
                 if is_bad_user_agent(ua_str):
                     abort(spider, f"User-Agent header '{ua_str}' is not permitted")
 
-        # TODO: remove local mode checking in this middleware (just dont add it instead)
-        if spider.local_mode:
-            # enforce file:// prefix to prevent non-local requests
-            url = request.url
-            if not url.startswith("file://"):
-                abort(spider, f"Non-local URL request '{url}' in local-mode")
-            return None
-
         # set proxy/bindaddress
         if self.proxy_ip:
             request.meta["proxy"] = self.proxy_ip
@@ -140,42 +132,43 @@ class PrivacyCheckerDLMW:
         if not self._check_ua:
             spider.logger.warning("User-agent header check is off!")
 
-        # skip privacy-related network checks if scraping locally
-        if spider.local_mode:
-            return
+        # Initialize proxy and interface IP attributes
+        self.proxy_ip = ""
+        self.interface_ip = ""
 
         # leaktest
         _do_leaktest = not os.environ.get(ENVVAR_NO_LEAK_TEST, False)
         if not _do_leaktest:
             spider.logger.warning("DNS leak test is disabled!")
         # check proxy
-        self.proxy_ip = os.environ.get(ENVVAR_PROXY_IP)
-        if self.proxy_ip:
+        proxy_ip = os.environ.get(ENVVAR_PROXY_IP)
+        if proxy_ip:
             leaktest_script = os.environ.get(
                 ENVVAR_PROXY_LEAKTEST_SCRIPT, "leaktest.sh"
             )
             # check for leaks
             if _do_leaktest and _is_leaking(leaktest_script):
-                self.proxy_ip = ""
                 spider.logger.warning("Proxy dnsleak test failed!")
+            else:
+                self.proxy_ip = proxy_ip
 
         # check regular network interface
         if not self.proxy_ip:
             # check interface
-            self.interface_ip = ""
             interface = os.environ.get(ENVVAR_ALLOWED_INTERFACE)
             if interface:
                 # REF: split up try/except blocks
                 try:
                     is_up = _interface_is_up(interface)
-                    self.interface_ip = _interface_ip(interface)
+                    interface_ip = _interface_ip(interface)
                 except ValueError as exc:
                     abort(spider, f"{exc}")
                 else:
                     if not is_up:
                         abort(spider, f"Allowed interface '{interface}' is down")
-                    if not self.interface_ip:
+                    if not interface_ip:
                         abort(spider, f"Allowed interface '{interface}' has no ip")
+                    self.interface_ip = interface_ip
             # check for leaks
             leaktest_script = os.environ.get(ENVVAR_LEAKTEST_SCRIPT, "leaktest.sh")
             if _do_leaktest and _is_leaking(leaktest_script):

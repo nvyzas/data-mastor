@@ -224,15 +224,19 @@ class Baze(Spider):
         # apply middlewares
         dlmw_base = spider.settings[DLMWBASE_KEY]
         dlmw = spider.settings[DLMW_KEY]
-        pos = between_middlewares(
-            {**dlmw_base, **dlmw},
-            [
-                "DefaultHeadersMiddleware",
-                "UserAgentMiddleware",
-                "RandomUserAgentMiddleware",
-            ],
-        )
-        dlmw[PrivacyCheckerDLMW] = pos
+        
+        # Only add PrivacyCheckerDLMW if not in local mode
+        if not spider._local_mode:
+            pos = between_middlewares(
+                {**dlmw_base, **dlmw},
+                [
+                    "DefaultHeadersMiddleware",
+                    "UserAgentMiddleware",
+                    "RandomUserAgentMiddleware",
+                ],
+            )
+            dlmw[PrivacyCheckerDLMW] = pos
+        
         if spider.save_html:
             dlmw[ResponseSaverDLMW] = 950
 
