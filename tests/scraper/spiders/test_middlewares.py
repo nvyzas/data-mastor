@@ -13,7 +13,6 @@ from data_mastor.scraper.middlewares import (
     PrivacyCheckerDLMW,
 )
 from data_mastor.scraper.spiders import Baze
-from data_mastor.scraper.utils import abort
 
 
 @pytest.fixture
