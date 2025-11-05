@@ -19,10 +19,15 @@ from data_mastor.scraper.spiders import Baze
 def spider_instance():
     """Create a spider instance directly for unit testing."""
     fp = tempfile.NamedTemporaryFile("r", delete=False)
-    spider = Baze(url=f"file://{fp.name}")
-    yield spider
-    fp.close()
-    os.unlink(fp.name)
+    try:
+        spider = Baze(url=f"file://{fp.name}")
+        yield spider
+    finally:
+        fp.close()
+        try:
+            os.unlink(fp.name)
+        except OSError:
+            pass  # File might already be deleted
 
 
 @pytest.fixture
@@ -117,7 +122,7 @@ def test_leaktest(spider_instance, middleware, mock_nonlocal_mode, mock_is_leaki
     assert mock_nonlocal_mode.return_value is False
     
     # Determine expected behavior before calling spider_opened
-    should_run_leaktest = not os.environ[ENVVAR_NO_LEAK_TEST]
+    should_run_leaktest = not os.environ.get(ENVVAR_NO_LEAK_TEST, "")
     should_abort = should_run_leaktest and mock_is_leaking.return_value
     
     # Call spider_opened, catching abort exception if expected
