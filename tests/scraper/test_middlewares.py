@@ -10,7 +10,11 @@ from data_mastor.scraper.middlewares import (
     ENVVAR_NO_UA_TEST,
     ENVVAR_PROXY_IP,
     PrivacyCheckerDLMW,
+    _interface_ip,
+    _interface_is_up,
+    _is_leaking,
 )
+from data_mastor.scraper.utils import abort
 
 
 @pytest.fixture
@@ -50,126 +54,170 @@ def env_allowed_interface(request):
     )
 
 
+@pytest.fixture
+def mock_interface_ip(mocker: MockerFixture):
+    """Mock the _interface_ip function."""
+    return mocker.patch(
+        "data_mastor.scraper.middlewares._interface_ip", autospec=_interface_ip
+    )
+
+
+@pytest.fixture
+def mock_interface_is_up(mocker: MockerFixture):
+    """Mock the _interface_is_up function."""
+    return mocker.patch(
+        "data_mastor.scraper.middlewares._interface_is_up", autospec=_interface_is_up
+    )
+
+
+@pytest.fixture(params=["leaksY", "leaksN"])
+def mock_is_leaking(mocker: MockerFixture, request):
+    """Mock the _is_leaking function."""
+    mock = mocker.patch(
+        "data_mastor.scraper.middlewares._is_leaking", autospec=_is_leaking
+    )
+    mock.return_value = True if request.param == "leaksY" else False
+    return mock
+
+
+@pytest.fixture
+def mock_abort(mocker: MockerFixture):
+    """Mock the abort function to raise an exception for testing."""
+    mock = mocker.patch("data_mastor.scraper.middlewares.abort", autospec=abort)
+    mock.side_effect = RuntimeError("Test abort called")
+    return mock
+
+
 @pytest.mark.usefixtures(
     env_proxy_ip.__name__,
     env_allowed_interface.__name__,
     env_no_ua_test.__name__,
     env_no_leak_test.__name__,
 )
-def test_spider_opened_no_proxy_no_interface(
-    mock_spider, middleware, mocker: MockerFixture
+def test_spider_opened(
+    mock_spider,
+    middleware,
+    mock_is_leaking,
+    mock_interface_is_up,
+    mock_interface_ip,
+    mock_abort,
 ):
-    """Test spider_opened when no proxy or interface is configured."""
-    mock_is_leaking = mocker.patch("data_mastor.scraper.middlewares._is_leaking")
-    mock_is_leaking.return_value = False  # No leaks detected
-    mock_interface_is_up = mocker.patch(
-        "data_mastor.scraper.middlewares._interface_is_up"
-    )
-    mock_interface_ip = mocker.patch("data_mastor.scraper.middlewares._interface_ip")
-    mock_abort = mocker.patch("data_mastor.scraper.middlewares.abort")
-
-    middleware.spider_opened(mock_spider)
-
-    # When no proxy or interface is configured (empty env vars), checks should not be called
-    if not os.environ.get(ENVVAR_PROXY_IP) and not os.environ.get(
-        ENVVAR_ALLOWED_INTERFACE
-    ):
-        assert not mock_interface_is_up.called
-        assert not mock_interface_ip.called
-        # When leak test is enabled and no proxy/interface, leak test should run
-        if not os.environ.get(ENVVAR_NO_LEAK_TEST):
-            assert mock_is_leaking.called
-        assert not mock_abort.called
-
-
-@pytest.mark.usefixtures(env_no_leak_test.__name__)
-def test_spider_opened_with_leaktest(mock_spider, middleware, mocker: MockerFixture):
-    """Test spider_opened with leak test configuration."""
-    mock_is_leaking = mocker.patch("data_mastor.scraper.middlewares._is_leaking")
-    mock_abort = mocker.patch("data_mastor.scraper.middlewares.abort")
-    mock_abort.side_effect = RuntimeError("Test abort called")
-
-    # Set proxy for testing
-    os.environ[ENVVAR_PROXY_IP] = "1.2.3.4"
-
+    """Test spider_opened method with various environment configurations.
+    
+    Tests the middleware initialization logic including:
+    - User-agent check configuration
+    - Proxy configuration and leak testing
+    - Network interface configuration and leak testing
+    - Abort behavior on leak detection
+    
+    The middleware follows this flow:
+    1. Check UA configuration
+    2. If proxy configured: run proxy leak test (if enabled)
+    3. If no proxy: check interface (if configured), then run regular leak test (if enabled)
+    4. Abort if leak detected
+    """
+    # Get current environment configuration
+    proxy_ip = os.environ.get(ENVVAR_PROXY_IP)
+    interface = os.environ.get(ENVVAR_ALLOWED_INTERFACE)
+    leak_test_enabled = not os.environ.get(ENVVAR_NO_LEAK_TEST)
+    
     # Determine expected behavior
-    should_run_leaktest = not os.environ.get(ENVVAR_NO_LEAK_TEST, "")
-    should_abort = should_run_leaktest and mock_is_leaking.return_value
-
+    should_abort = leak_test_enabled and mock_is_leaking.return_value
+    
     # Call spider_opened, catching abort exception if expected
     if should_abort:
         with pytest.raises(RuntimeError, match="Test abort called"):
             middleware.spider_opened(mock_spider)
     else:
         middleware.spider_opened(mock_spider)
-
-    # Check behavior based on environment variable
-    if not should_run_leaktest:
-        assert not mock_is_leaking.called
-        assert not mock_abort.called
-    else:
-        # Leak test should have been called for proxy
+    
+    # Verify user-agent check was configured
+    ua_check_enabled = not os.environ.get(ENVVAR_NO_UA_TEST)
+    assert middleware._check_ua == ua_check_enabled
+    
+    # Verify leak test behavior
+    # Leak test always runs when enabled (either for proxy or for regular network)
+    if leak_test_enabled:
         assert mock_is_leaking.called
-        if should_abort:
-            assert mock_abort.called
+    else:
+        assert not mock_is_leaking.called
+    
+    # Verify interface checks behavior
+    # Interface checks run when interface is configured AND (no proxy OR proxy leak test failed)
+    # When proxy leak test fails, proxy_ip is not set on middleware, so interface checks run
+    proxy_passed_leak_test = proxy_ip and not (leak_test_enabled and mock_is_leaking.return_value)
+    if interface and not proxy_passed_leak_test:
+        assert mock_interface_is_up.called
+        assert mock_interface_ip.called
+    else:
+        assert not mock_interface_is_up.called
+        assert not mock_interface_ip.called
+    
+    # Verify abort behavior
+    if should_abort:
+        assert mock_abort.called
+    else:
+        assert not mock_abort.called
 
 
-def test_process_request_with_proxy(mock_spider, middleware):
-    """Test process_request sets proxy correctly."""
+def test_process_request(mock_spider, middleware, mocker: MockerFixture):
+    """Test process_request method with various configurations.
+    
+    Tests the request processing logic including:
+    - Proxy configuration (sets request.meta["proxy"])
+    - Interface/bindaddress configuration (sets request.meta["bindaddress"])
+    - User-Agent header validation (aborts on missing or bad UA)
+    - Proper precedence (proxy takes priority over interface)
+    """
+    # Test 1: Proxy configuration
     middleware._check_ua = False
     middleware.proxy_ip = "http://proxy:8080"
     middleware.interface_ip = ""
-
+    
     request = Request("http://example.com")
     result = middleware.process_request(request, mock_spider)
-
+    
     assert result is None
     assert request.meta["proxy"] == "http://proxy:8080"
-
-
-def test_process_request_with_interface(mock_spider, middleware):
-    """Test process_request sets bindaddress correctly."""
-    middleware._check_ua = False
+    assert "bindaddress" not in request.meta
+    
+    # Test 2: Interface/bindaddress configuration
     middleware.proxy_ip = ""
     middleware.interface_ip = "192.168.1.100"
-
+    
     request = Request("http://example.com")
     result = middleware.process_request(request, mock_spider)
-
+    
     assert result is None
     assert request.meta["bindaddress"] == "192.168.1.100"
-
-
-def test_process_request_user_agent_check(
-    mock_spider, middleware, mocker: MockerFixture
-):
-    """Test process_request checks User-Agent header."""
-    mock_abort = mocker.patch("data_mastor.scraper.middlewares.abort")
-    mock_abort.side_effect = RuntimeError("Test abort called")
-
+    assert "proxy" not in request.meta
+    
+    # Test 3: User-Agent validation - missing User-Agent
+    mock_abort_local = mocker.patch("data_mastor.scraper.middlewares.abort", autospec=abort)
+    mock_abort_local.side_effect = RuntimeError("Test abort called")
+    
     middleware._check_ua = True
     middleware.proxy_ip = ""
     middleware.interface_ip = ""
-
-    # Test with missing User-Agent
+    
     request = Request("http://example.com")
     with pytest.raises(RuntimeError, match="Test abort called"):
         middleware.process_request(request, mock_spider)
-    assert mock_abort.called
-
-    # Test with bad User-Agent (contains "bot")
-    mock_abort.reset_mock()
+    assert mock_abort_local.called
+    
+    # Test 4: User-Agent validation - bad User-Agent (contains "bot")
+    mock_abort_local.reset_mock()
     request = Request("http://example.com", headers={"User-Agent": "mybot"})
     with pytest.raises(RuntimeError, match="Test abort called"):
         middleware.process_request(request, mock_spider)
-    assert mock_abort.called
-
-    # Test with good User-Agent
-    mock_abort.reset_mock()
+    assert mock_abort_local.called
+    
+    # Test 5: User-Agent validation - good User-Agent
+    mock_abort_local.reset_mock()
     request = Request("http://example.com", headers={"User-Agent": "Mozilla/5.0"})
     result = middleware.process_request(request, mock_spider)
     assert result is None
-    assert not mock_abort.called
+    assert not mock_abort_local.called
 
 
 if __name__ == "__main__":
