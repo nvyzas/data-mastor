@@ -70,7 +70,7 @@ def _interface_is_up(interface_name):
 # scrapy acts as if the downloader middleware does not modify the passed objects.
 
 
-class PrivacyCheckerDLMW:
+class PrivacyCheckerDlMw:
     @classmethod
     def from_crawler(cls, crawler):
         dlmw = cls()
@@ -176,7 +176,7 @@ class PrivacyCheckerDLMW:
                 abort(spider, "Dnsleak test failed!")
 
 
-class ResponseSaverDLMW:
+class ResponseSaverSpMw:
     """Spider-agnostic spider middleware to save HTML responses to files.
 
     This middleware saves HTML responses to disk when enabled via the SAVE_HTML setting.

@@ -15,7 +15,7 @@ from scrapy.settings import SETTINGS_PRIORITIES, Settings
 from scrapy.utils.project import get_project_settings
 
 from data_mastor.cliutils import Opt, parse_yamlargs, yaml_get
-from data_mastor.scraper.middlewares import PrivacyCheckerDLMW, ResponseSaverDLMW
+from data_mastor.scraper.middlewares import PrivacyCheckerDlMw, ResponseSaverSpMw
 from data_mastor.scraper.pipelines import TIMESTAMP_FMT, ListingStorer, SourceStorer
 from data_mastor.scraper.utils import DLMW_KEY, DLMWBASE_KEY, between_middlewares
 
@@ -224,7 +224,7 @@ class Baze(Spider):
         # apply middlewares
         dlmw_base = spider.settings[DLMWBASE_KEY]
         dlmw = spider.settings[DLMW_KEY]
-        
+
         # Only add PrivacyCheckerDLMW if not in local mode
         if not spider._local_mode:
             pos = between_middlewares(
@@ -235,10 +235,10 @@ class Baze(Spider):
                     "RandomUserAgentMiddleware",
                 ],
             )
-            dlmw[PrivacyCheckerDLMW] = pos
-        
+            dlmw[PrivacyCheckerDlMw] = pos
+
         if spider.save_html:
-            dlmw[ResponseSaverDLMW] = 950
+            dlmw[ResponseSaverSpMw] = 950
 
         # effectively disable OffsiteDownloadMiddleware if scraping locally
         if spider._local_mode:
