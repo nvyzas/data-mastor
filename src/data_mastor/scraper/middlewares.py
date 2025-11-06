@@ -197,18 +197,6 @@ class ResponseSaverDLMW:
 
         # Optional: enable HTML saving (default: False)
         SAVE_HTML = True
-
-    Example spider usage:
-        class MySpider(scrapy.Spider):
-            name = 'myspider'
-            start_urls = ['http://example.com']
-            custom_settings = {
-                'OUT_DIR': 'output/myspider',
-                'SAVE_HTML': True,
-                'SPIDER_MIDDLEWARES': {
-                    'data_mastor.scraper.middlewares.ResponseSaverDLMW': 950,
-                }
-            }
     """
 
     @staticmethod
