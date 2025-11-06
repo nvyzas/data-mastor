@@ -29,13 +29,20 @@ disallowed_tools:
 
 ## pipelines (module)
 
+# Test generation
+- Prefer using the mocker fixture from pytest_mock, rather than using unittest.Mock directly.
+- Prefer using pytest parametrization than similar tests with duplicate logic. Use id function if parametrization testcase is not clear by arguments alone.
+- Prefer using self-explanatory testnames than documentation (even """...""" one-liners).
+
+
 # Tooling
 
 ## uv
 Agents should run all other tooling commands by prepending 'uv run' to the actual command
 
 ## pytest
-Agents should make sure all tests pass before commiting by running: 'pytest -q'
+Agents should make sure all tests pass before committing by running: 'pytest -v'
 
-## ruff
-Agents should make sure everything is properly formatted and has no errors before commiting by running: 'ruff check --fix'
+## pre-commit
+Agents should make sure all pre-commit hooks pass before committing by
+running 'pre-commit run -a'.
