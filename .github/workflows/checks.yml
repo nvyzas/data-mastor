@@ -1,0 +1,22 @@
+---
+name: "Checks"
+on:
+  push: {}
+  pull_request: {}
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup
+      - name: "Run ruff"
+        run: uv run ruff check
+      - name: "Run mypy"
+        run: uv run mypy .
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup
+      - name: "Run tests"
+        run: uv run pytest -v
