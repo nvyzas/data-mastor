@@ -14,14 +14,6 @@ dependencies = [
     "typer>=0.20.0",
 ]
 
-
-[[tool.mypy.overrides]]
-module = [
-    "sklearn.*",
-    "mlflow.*",
-]
-ignore_missing_imports = true
-
 [dependency-groups]
 dev = [
     "mypy>=1.18.2",
@@ -45,3 +37,11 @@ dm = "data_mastor.dbman:app"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.mypy]
+packages=["data_mastor"]
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+strict_equality = true
+check_untyped_defs = true

@@ -41,6 +41,16 @@ repos:
     rev: v1.5.0
     hooks:
       - id: yesqa
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy
+        entry: .venv/bin/mypy
+        language: system
+        types: [python]
+        files: \.py$
+        # args: ["--config-file=pyproject.toml"]
+        require_serial: true
   # YAML
   - repo: https://github.com/google/yamlfmt
     rev: v0.20.0
