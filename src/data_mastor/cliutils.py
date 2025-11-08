@@ -1,13 +1,16 @@
 import os
 from pathlib import Path
+from typing import Any
 
 import typer
 import yaml
 from click.core import ParameterSource
 
 
-# TODO: replace all uses of this with yaml_get
-def get_yamldict_key(yamlfile: str | Path, key: str, doraise=False, default=None):
+# DO replace all uses of this with yaml_get
+def get_yamldict_key(
+    yamlfile: str | Path, key: str, doraise: bool = False, default: Any = None
+):
     if default is None:
         default = {}
     yamlfile = Path(yamlfile)
@@ -29,7 +32,7 @@ def get_yamldict_key(yamlfile: str | Path, key: str, doraise=False, default=None
         return default
 
 
-def yaml_get(yamlpath: str | Path, keys: list[str] | str = "", doraise=False):
+def yaml_get(yamlpath: str | Path, keys: list[str] | str = "", doraise: bool = False):
     yamlpath = Path(yamlpath)
     if yamlpath.is_file():
         with open(yamlpath) as file:

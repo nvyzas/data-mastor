@@ -2,6 +2,7 @@ import os
 import socket
 import subprocess
 from pathlib import Path
+from typing import Self
 
 import psutil
 from scrapy import Request, Spider, signals
@@ -18,7 +19,7 @@ ENVVAR_LEAKTEST_SCRIPT = "LEAKTEST_SCRIPT"
 
 
 # dns leak test utility function
-def _is_leaking(script, num_tries=3):
+def _is_leaking(script, num_tries=3) -> bool:
     print(f"PrivacyChecker: running dnsleak test: '{script}'")
     out = ""
     for i in range(num_tries):
@@ -45,7 +46,7 @@ def _is_leaking(script, num_tries=3):
 
 
 # utility function to get interface ip
-def _interface_ip(interface_name):
+def _interface_ip(interface_name) -> str:
     interfaces = psutil.net_if_addrs()
     if interface_name in interfaces:
         for addr in interfaces[interface_name]:
@@ -57,7 +58,7 @@ def _interface_ip(interface_name):
 
 
 # utility function to get interface up/down status
-def _interface_is_up(interface_name):
+def _interface_is_up(interface_name) -> bool:
     interfaces = psutil.net_if_stats()
     if interface_name in interfaces:
         return interfaces[interface_name].isup
@@ -72,7 +73,7 @@ def _interface_is_up(interface_name):
 
 class PrivacyCheckerDlMw:
     @classmethod
-    def from_crawler(cls, crawler):
+    def from_crawler(cls, crawler) -> Self:
         dlmw = cls()
         crawler.signals.connect(dlmw.spider_opened, signal=signals.spider_opened)
         return dlmw
@@ -158,7 +159,7 @@ class PrivacyCheckerDlMw:
             # check interface
             interface = os.environ.get(ENVVAR_ALLOWED_INTERFACE)
             if interface:
-                # REF: split up try/except blocks
+                # REF split up try/except blocks
                 try:
                     is_up = _interface_is_up(interface)
                     interface_ip = _interface_ip(interface)

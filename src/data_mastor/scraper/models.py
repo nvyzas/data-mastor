@@ -55,11 +55,11 @@ class Source(Base):
     # parent url
     parent_url: Mapped[str] = mapped_column(String(URL_LENGTH), repr=True, init=True)
     # parent id
-    parent_id: Mapped[int] | None = mapped_column(
+    parent_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey(f"{__tablename__}.id"), repr=True, init=False
     )
     # adjacency relationship
-    parent: Mapped["Source| None"] = relationship(
+    parent: Mapped["Source | None"] = relationship(
         "Source", remote_side=[id], repr=False, init=False
     )
     # level
@@ -196,7 +196,7 @@ class Listing(Base):
     source_id: Mapped[int | None] = mapped_column(
         ForeignKey(Source.id, onupdate="CASCADE", ondelete="SET NULL"), init=False
     )
-    # corresponding product id # TODO define product relationship?
+    # corresponding product id # DO define product relationship?
     product_id: Mapped[int | None] = mapped_column(
         ForeignKey(Product.id, onupdate="CASCADE", ondelete="SET NULL"), init=False
     )

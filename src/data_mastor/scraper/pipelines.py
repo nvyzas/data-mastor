@@ -3,6 +3,7 @@ import logging
 from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
+from typing import Self
 
 import pandas as pd
 import typer
@@ -23,7 +24,7 @@ from data_mastor.scraper.utils import abort
 TIMESTAMP_FMT = "%Y-%m-%d_%H-%M-%S"
 
 
-# TODO make it into a generic class
+# DO make it into a generic class
 class Storer[TEntity: Listing | Source, TItem: ListingItem | SourceItem]:
     def __init__(
         self,
@@ -44,7 +45,7 @@ class Storer[TEntity: Listing | Source, TItem: ListingItem | SourceItem]:
 
     # meant to be called only by a Storer subclass, not (directly) by scrapy
     @classmethod
-    def from_crawler(cls, crawler, entitycls: type[TEntity] | None = None):
+    def from_crawler(cls, crawler, entitycls: type[TEntity] | None = None) -> Self:
         if entitycls is None:
             raise TypeError("entitycls is None")
         return cls(
@@ -53,7 +54,7 @@ class Storer[TEntity: Listing | Source, TItem: ListingItem | SourceItem]:
             dont_store=crawler.settings.get("DONT_STORE"),
         )
 
-    def _add_to_session(self, entity, spider: Spider):
+    def _add_to_session(self, entity, spider: Spider) -> None:
         try:
             self._session.add(entity)
         except Exception as exc:
@@ -61,7 +62,7 @@ class Storer[TEntity: Listing | Source, TItem: ListingItem | SourceItem]:
         else:
             self._added.append(entity)
 
-    def _process_samples(self, spider: Spider):
+    def _process_samples(self, spider: Spider) -> None:
         # get samples
         samples = getattr(spider, "get_samples", lambda: None)()
         if not samples:
@@ -77,20 +78,20 @@ class Storer[TEntity: Listing | Source, TItem: ListingItem | SourceItem]:
         # purge session state (removing the sample items)
         self._session.expunge_all()
         self._added = []
-        # TODO: also test session flush/commit
+        # DO also test session flush/commit
 
-    def _log_num_entities(self, spider: Spider):
+    def _log_num_entities(self, spider: Spider) -> None:
         num = self.entitycls.num_entities(self._session)
         spider.logger.info(f"Number of entities on pipeline start: {num}")
 
-    def open_spider(self, spider: Spider):
+    def open_spider(self, spider: Spider) -> None:
         spider.logger.debug(f"Running {type(self).__name__} open_spider")
         self._log_num_entities(spider)
 
         # simulate item processing using samples (before doing the actual scraping)
         self._process_samples(spider)
 
-    def close_spider(self, spider: Spider):
+    def close_spider(self, spider: Spider) -> None:
         spider.logger.debug(f"Running {type(self).__name__} close_spider")
         self._log_num_entities(spider)
         spider.logger.info(f"Added {len(self._added)} items")
@@ -113,7 +114,7 @@ class Storer[TEntity: Listing | Source, TItem: ListingItem | SourceItem]:
             else:
                 spider.logger.info("Session commit was successful")
 
-        # print num entities # TODO: fix
+        # print num entities # DO fix
         # num = num_entities(self.session, spider.itemcls())
         # print(f"Number of stored {entitycls} on pipeline end: {num}")
 
@@ -126,7 +127,7 @@ class Storer[TEntity: Listing | Source, TItem: ListingItem | SourceItem]:
 
 
 class ListingStorer(Storer[Listing, ListingItem]):
-    def __init__(self, entitycls: type[Listing] = Listing, **kwargs):
+    def __init__(self, entitycls: type[Listing] = Listing, **kwargs) -> None:
         super().__init__(entitycls, **kwargs)
         self.products = pd.read_sql_table(Product.__tablename__, self._engine)
 
@@ -138,7 +139,7 @@ class ListingStorer(Storer[Listing, ListingItem]):
             logging.getLogger("crawler").warning(f"Using default entitycls: {Listing}")
         return super().from_crawler(crawler, entitycls=entitycls_)
 
-    def mapper(self, item: ListingItem):
+    def mapper(self, item: ListingItem) -> Listing:
         # parse price attributes from item
         def parse_price(price: str | None) -> float | None:
             if price is None:
@@ -173,7 +174,7 @@ class ListingStorer(Storer[Listing, ListingItem]):
 
 
 class SourceStorer(Storer):
-    def __init__(self, entitycls: type[Source] = Source, **kwargs):
+    def __init__(self, entitycls: type[Source] = Source, **kwargs) -> None:
         super().__init__(entitycls, **kwargs)
 
     def process_item(self, item: SourceItem, spider: Spider) -> SourceItem:
@@ -213,7 +214,7 @@ class SourceStorer(Storer):
         return item
 
 
-def process_json_feed(json_path: str | Path, **pipe_kwargs):
+def process_json_feed(json_path: str | Path, **pipe_kwargs) -> None:
     # read feed
     with open(json_path) as file:
         feed = json.load(file)
