@@ -4,9 +4,6 @@
     "config:base"
   ],
   "pruneStaleBranches": true,
-  "ignorePaths": [
-    "requirements.txt"
-  ],
   "lockFileMaintenance": {
     "enabled": true
   },
