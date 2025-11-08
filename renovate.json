@@ -4,6 +4,7 @@
     "config:base"
   ],
   "pruneStaleBranches": true,
+  // CHORE: remove this if renovate tries to auto-udpate lockfile ALONE
   "lockFileMaintenance": {
     "enabled": true
   },
@@ -11,4 +12,5 @@
     "enabled": true
   },
   "rangeStrategy": "bump"
+  // CHORE: groups pyproject.toml, uv.lock and requirements.txt if problems persist
 }

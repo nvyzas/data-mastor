@@ -15,6 +15,7 @@ runs:
     # uv
     - name: "Setup uv with caching enabled"
       # pin for compatibility with Github Local Actions extension
+      # CHORE make sure this is not auto-updated by renovate
       uses: astral-sh/setup-uv@f94ec6bedd8674c4426838e6b50417d36b6ab231 #v5.3.1
       with:
         enable-cache: true
