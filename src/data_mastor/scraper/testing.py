@@ -11,7 +11,6 @@ import pytest
 from sqlalchemy import Engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.orm.session import Session
-from sqlalchemy.pool.impl import StaticPool
 
 from data_mastor.cliutils import get_yamldict_key
 from data_mastor.dbman import get_engine
@@ -23,11 +22,12 @@ importable_fixture = "dummy"
 
 
 # DATABASE
+TEST_DB_URL = "sqlite:///:memory:"
 
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_db_url() -> None:
-    os.environ["DB_URL"] = "sqlite:///:memory:"
+    os.environ["DB_URL"] = TEST_DB_URL
 
 
 @pytest.fixture(scope="session")
@@ -58,29 +58,37 @@ def engine(setup_db_url, extension_modules: list[ModuleType | str]):
                 raise TypeError("Ignoring unsupported model_extension entry: %r", ext)
             print(f"Using model-extension module '{ext.__name__}'")
 
-    kwargs = {"connect_args": {"check_same_thread": False}, "poolclass": StaticPool}
+    kwargs = {"connect_args": {"check_same_thread": False}}
     engine = get_engine(**kwargs)
+    print(f"Engine URL: {engine.url}")
+    assert str(engine.url) == TEST_DB_URL
     Base.metadata.create_all(engine)
     yield engine
 
 
 @pytest.fixture(scope="session")
-def Sessionmaker(engine: Engine):
-    """Create a new sessionmaker for the test session (scope same as engine)."""
-    Sessionmaker = sessionmaker(bind=engine)
-    yield Sessionmaker
-
-
-@pytest.fixture(scope="function")
-def session(Sessionmaker: sessionmaker[Session]):
-    session: Session = Sessionmaker()
-    yield session
-    session.close()
+def sessmkr(engine: Engine):
+    yield sessionmaker(bind=engine)
 
 
 @pytest.fixture
-def session_add(session: Session, items: Iterable[Base]):
-    session.add_all(items)
+def reset_db(sessmkr: sessionmaker[Session]):
+    with sessmkr() as session:
+        Base.metadata.drop_all(session.get_bind())
+        Base.metadata.create_all(session.get_bind())
+
+
+@pytest.fixture
+def entities() -> list[Base]:
+    return []
+
+
+@pytest.fixture
+def fill_with_entities(
+    reset_db, sessmkr: sessionmaker[Session], entities: Iterable[Base]
+) -> None:
+    with sessmkr() as session:
+        session.add_all(entities)
 
 
 # SPIDER
@@ -164,7 +172,7 @@ def configure_spidercls(
     testname = request.node.name.replace("[", "_").replace("]", "")
     assert isinstance(testname, str)
     out_dir = Path("tests/out") / (timestamp + "_" + testname + "_" + spidercls.name)
-    TESTING_SETTINGS["OUT_DIR"] = out_dir
+    TESTING_SETTINGS["OUT_DIR"] = str(out_dir.absolute())
 
     # apply config
     spidercls._settings = {**yaml_settings, **TESTING_SETTINGS, **_settings}

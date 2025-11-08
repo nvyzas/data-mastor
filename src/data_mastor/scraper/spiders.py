@@ -1,7 +1,8 @@
 import inspect
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Any, TypeGuard
+from typing import TYPE_CHECKING, Annotated, Any, TypeGuard, cast
 
 import typer
 import yaml
@@ -9,25 +10,26 @@ from click.core import ParameterSource
 from rich import print
 from scrapy import Spider
 from scrapy.crawler import CrawlerProcess
-from scrapy.exceptions import CloseSpider
-from scrapy.http import Response
 from scrapy.settings import SETTINGS_PRIORITIES, Settings
 from scrapy.utils.project import get_project_settings
 
 from data_mastor.cliutils import Opt, parse_yamlargs, yaml_get
-from data_mastor.scraper.middlewares import PrivacyCheckerDLMW, ResponseSaverDLMW
+from data_mastor.scraper.middlewares import PrivacyCheckerDlMw, ResponseSaverSpMw
 from data_mastor.scraper.pipelines import TIMESTAMP_FMT, ListingStorer, SourceStorer
 from data_mastor.scraper.utils import DLMW_KEY, DLMWBASE_KEY, between_middlewares
+
+if TYPE_CHECKING:
+    pass
 
 LATIN_ALPHABET = "AaBbGgDdEeZzHhJjIiKkLlMmNnXxOoPpRrSssTtUuFfQqYyWw"
 
 USED_ARGS_FILENAME = "used_args.yml"
 
-# REFACTOR: use a class to manage the timestamp instead
+# REF use a class to manage the timestamp instead
 timestamp: str = ""
 
 
-def set_timestamp():
+def set_timestamp() -> None:
     global timestamp
     if timestamp != "":
         raise RuntimeError(f"Timestamp ({timestamp}) is supposed to be set only once!")
@@ -41,8 +43,6 @@ class Baze(Spider):
     # CLI
     # required in get_yaml_key(cls.name, ...)
     name = "baze"
-    # required for validation/prioritization of args
-    _specified_args = set()  # used by typer option callbacks => init here (before ctx)
     # make settings and spiderargs accessible to typer callback AND typer command
     _settings: dict[str, Any] = {}
     _spiderargs: dict[str, Any] = {}
@@ -50,20 +50,23 @@ class Baze(Spider):
     _test_cli: bool
     # serves as a single source of truth for default spiderarg/setting values
     # applied in both: scrapy crawl CLI (__init__/from_crawler), and custom CLI (_cli)
-    # REFACTOR: replace specs with pydantic classes
+    # REF replace specs with pydantic classes
     sett_specs: dict[str, Any] = {
         "OUT_DIR": f"out/{name}/{timestamp}",
-        "DONT_STORE": False,
+        "DONT_STORE": False,  # DO make it NO_WRITE_DB
         "NOW": timestamp,
     }
     sparg_specs: dict[str, Any] = {"url": None, "save_html": False}
+    # explicitly declare default classattr value assumed by OffsiteDownloadMiddleware
+    # needed here so that type-checkers know the classattr exists
+    allowed_domains: list[str] = []
 
-    # default values for spiderargs (**kwargs) are defined here to stay compatible
     def __init__(self, name=None, **kwargs):
         # run default init first to assign name, spiderargs, and start_urls to self
         super().__init__(name, **kwargs)
 
         # check if url arg was given
+        self.url: str | None
         try:
             self.url
         except AttributeError:
@@ -102,21 +105,12 @@ class Baze(Spider):
                 self.local_dir = dir
 
         # check if save_html arg was given
+        self.save_html: bool
         try:
             self.save_html
         except AttributeError:
             self.save_html = self.sparg_specs["save_html"]
             print(f"Using default value: save_html={self.save_html}")
-
-        # check if html_namer function is defined
-        if self.save_html or self.local_mode:
-            self.html_namer_calls = 1
-            try:
-                self.html_namer
-            except AttributeError:
-                raise AttributeError(
-                    "save_html is on but html_namer spidercls function is undefined"
-                )
 
     @property
     def local_mode(self) -> bool:
@@ -127,37 +121,6 @@ class Baze(Spider):
         'file:///absolute/url'
         """
         return self._local_mode
-
-    @staticmethod
-    def split_url(url: str):
-        """Get the first and last part of a url."""
-        parts = url.rstrip(".html").rstrip("/").split("/")
-        base = "/".join(parts[:-1]) + "/"
-        tip = parts[-1]
-        return base, tip
-
-    def localize(self, s) -> str:
-        """Calculate the localized url."""
-        return s.replace("?", "_").replace("=", "")
-
-    def html_namer(self, response: Response) -> str:
-        """Returns the name of the html file to save (if self.save_html is enabled)."""
-        base, tip = self.split_url(response.url)
-        if not base.startswith("file://"):
-            tip = self.localize(tip) + ".html"
-        return tip
-
-    def next_local_url(self, key):
-        if not self.local_mode:
-            raise CloseSpider("next_local_url was called in non-local mode")
-        results = [path for path in self.local_dir.iterdir() if key == path.name]
-        if len(results) != 1 or len(results) == 0:
-            raise CloseSpider(f"Number of matched results ({results}) is not 1")
-        result = results[0]
-        if not result.is_file():
-            raise CloseSpider(f"Result ({result}) is not a file")
-        next_url = "file://" + str(result)
-        return next_url
 
     @classmethod
     def _all_baze_classes(cls) -> list[type["Baze"]]:
@@ -224,17 +187,21 @@ class Baze(Spider):
         # apply middlewares
         dlmw_base = spider.settings[DLMWBASE_KEY]
         dlmw = spider.settings[DLMW_KEY]
-        pos = between_middlewares(
-            {**dlmw_base, **dlmw},
-            [
-                "DefaultHeadersMiddleware",
-                "UserAgentMiddleware",
-                "RandomUserAgentMiddleware",
-            ],
-        )
-        dlmw[PrivacyCheckerDLMW] = pos
+
+        # Only add PrivacyCheckerDLMW if not in local mode
+        if not spider._local_mode:
+            pos = between_middlewares(
+                {**dlmw_base, **dlmw},
+                [
+                    "DefaultHeadersMiddleware",
+                    "UserAgentMiddleware",
+                    "RandomUserAgentMiddleware",
+                ],
+            )
+            dlmw[PrivacyCheckerDlMw] = pos
+
         if spider.save_html:
-            dlmw[ResponseSaverDLMW] = 950
+            dlmw[ResponseSaverSpMw] = 950
 
         # effectively disable OffsiteDownloadMiddleware if scraping locally
         if spider._local_mode:
@@ -253,17 +220,21 @@ class Baze(Spider):
         feeds_to_out_dir = any(
             map(lambda p: _pathstr(p).startswith(str(out_dir)), feedpaths)
         )
+        #
         if spider.save_html or log_to_out_dir or feeds_to_out_dir:
             out_dir.mkdir(parents=True, exist_ok=False)
             print(f"Created out dir: {out_dir}")
-            cli_settings = {
+            # initialize used args dict with cli settings
+            used_args = {
                 k: v
                 for k, v in spider.settings.items()
                 if spider.settings.getpriority(k) == SETTINGS_PRIORITIES["cmdline"]
             }
-            used_args_dict = {**cli_settings, **kwargs}
+            # update used args dict with (cli) spiderargs
+            used_args.update(kwargs)
+            # write to yaml file
             with open(out_dir / USED_ARGS_FILENAME, "w") as file:
-                yaml.dump({spider.name: used_args_dict}, file, default_flow_style=False)
+                yaml.dump(used_args, file, default_flow_style=False)
         # return
         return spider
 
@@ -289,19 +260,16 @@ class Baze(Spider):
         crawlspargs: Annotated[list[str] | None, Opt("-a", "--arg")] = None,
         # spidercls-specific settings (specsetts)
         NOW: Annotated[str | None, Opt("-n", "--NOW")] = sett_specs["NOW"],
-        DONT_STORE: Annotated[bool, Opt("--DONT-STORE")] = sett_specs[
-            "DONT_STORE"
-        ],  # TODO make it NO_WRITE_DB
+        DONT_STORE: Annotated[bool, Opt("--DONT-STORE")] = sett_specs["DONT_STORE"],
         # spidercls-specific spiderargs (specspargs)
         url: Annotated[str | None, Opt("-u", "--url")] = sparg_specs["url"],
-        save_html: Annotated[bool, Opt("-h", "--save-html")] = sparg_specs[
-            "save_html"
-        ],  # TODO make it a setting
+        save_html: Annotated[bool, Opt("-h", "--save-html")] = sparg_specs["save_html"],
         test_cli: Annotated[bool, Opt("-t", "--test-cli")] = False,
     ) -> None:
         # update _test_cli
         cls._test_cli = test_cli
-
+        # define helper variable type
+        dct: dict[str, Any]
         # apply 'scrapy crawl' CLI settings
         dct = {}
         for s in crawlsetts or []:
@@ -340,7 +308,6 @@ class Baze(Spider):
         yamlargs = parse_yamlargs(ctx, key=cls.name, edit_ctx_values=False)
         Baze._verbose_update(kwargs, yamlargs, "yamlargs")
 
-        # run classmethods: _cli_basic -> _cli_sub -> _cli
         for cm in [cls._cli_basic, cls._cli_sub, cls._cli]:
             kw = {k: v for k, v in kwargs.items() if k in cm.__annotations__}
             if "ctx" in cm.__annotations__:
@@ -348,7 +315,7 @@ class Baze(Spider):
             try:
                 print(f"Running '{cm.__name__}' with kwargs:")
                 print(kw)
-                cm(**kw)
+                cast(Callable[..., Any], cm)(**kw)
             except NotImplementedError:
                 print("WARNING: not implemented")
                 pass
@@ -396,11 +363,11 @@ class Baze(Spider):
         print(cls.used_args())
         # validate args
         for key, value in cls._settings.items():
-            # TODO check settings types (using scrapy scrapy/utils/conf.py?)
+            # DO check settings types (using scrapy scrapy/utils/conf.py?)
             if key not in Settings().attributes.keys() | cls.all_sett_specs():
                 raise typer.Abort(f"Unknown setting '{key}' with value '{value}'")
         for key, value in cls._spiderargs.items():
-            # TODO check spiderarg types using specified arg signatures
+            # DO check spiderarg types using specified arg signatures
             if key not in cls.all_sparg_specs():
                 raise typer.Abort(f"Unknown spiderarg '{key}' with value '{value}'")
         # run main or exit if test-cli flag is enabled
@@ -443,9 +410,9 @@ class Baze(Spider):
         def dummy_func_with_ctx(ctx: typer.Context):
             pass
 
-        fullsig_dict = {}
+        fullsig_dict: dict[str, Any] = {}
         for cm in [cls._cli_basic, cls._cli_sub, cls._cli]:
-            sig = inspect.signature(cm)
+            sig = inspect.signature(cast(Callable[..., Any], cm))
             fullsig_dict.update(sig.parameters)
         ctx_sig = {"ctx": inspect.signature(dummy_func_with_ctx).parameters["ctx"]}
         full_signature = inspect.Signature([*{**ctx_sig, **fullsig_dict}.values()])
@@ -455,7 +422,6 @@ class Baze(Spider):
         }
         cli_full.__annotations__ = annotations
         app.command(help=helpstr)(cli_full)
-        cls.app = app
         return app
 
     @classmethod
@@ -590,7 +556,7 @@ class BazeSrc(Baze, metaclass=Meta):
         return skip
 
     @classmethod
-    def _cli_sub(  # type: ignore
+    def _cli_sub(
         cls,
         include1: Annotated[
             list[str] | None, typer.Option("-i1", "--inc1")
@@ -626,7 +592,7 @@ class BazeSrc(Baze, metaclass=Meta):
 if __name__ == "__main__":
 
     class ShopSrc(BazeSrc):
-        # custom_settings={} # TODO test custom settings
+        # custom_settings={} # DO test custom settings
 
         @classmethod
         def _cli(cls) -> None:

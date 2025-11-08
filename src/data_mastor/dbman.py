@@ -3,11 +3,12 @@ import re
 import shutil
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import typer
 from deepdiff import DeepDiff
-from sqlalchemy import MetaData, create_engine
+from sqlalchemy import Engine, MetaData, create_engine
 
 from data_mastor.cliutils import get_yamldict_key
 from data_mastor.scraper.models import Base
@@ -16,7 +17,7 @@ from data_mastor.scraper.models import Base
 app = typer.Typer(invoke_without_command=True)
 
 # engine
-_engine = None
+_engine: None | Engine = None
 
 
 def get_db_url():
@@ -122,7 +123,7 @@ def migrate(yamlconf_file: Path = Path("conf.yml")):
 
     # determine removed tables/columns
     removed_tables = set()
-    removed_columns = {}
+    removed_columns: dict[str, Any] = {}
     for item in diff["dictionary_item_removed"]:
         parts = re.findall(r"\[(.*?)\]", item)
         if len(parts) == 1:

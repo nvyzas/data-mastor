@@ -58,7 +58,7 @@ def mainmock(mocker: MockerFixture) -> MagicMock:
 
 
 class ShopSrc(BazeSrc):
-    # custom_settings={} # TODO test priority rules for custom settings
+    # custom_settings={} # DO test priority rules for custom settings
 
     __test__ = False
 

@@ -174,3 +174,6 @@ mlrun*/
 # project
 out/
 tests/out/
+
+# copilot
+SESSION_LOG.md
