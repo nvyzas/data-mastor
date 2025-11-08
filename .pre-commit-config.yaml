@@ -15,6 +15,14 @@ repos:
       - id: check-yaml
       - id: check-added-large-files
   # Python
+  - repo: https://github.com/asottile/pyupgrade
+    rev: v3.21.0
+    hooks:
+      - id: pyupgrade
+  - repo: https://github.com/asottile/yesqa
+    rev: v1.5.0
+    hooks:
+      - id: yesqa
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.14.3
     hooks:
@@ -33,14 +41,6 @@ repos:
       - id: docformatter
         additional_dependencies: [tomli]
         args: [--in-place, --black, --config, ./pyproject.toml]
-  - repo: https://github.com/asottile/pyupgrade
-    rev: v3.21.0
-    hooks:
-      - id: pyupgrade
-  - repo: https://github.com/asottile/yesqa
-    rev: v1.5.0
-    hooks:
-      - id: yesqa
   - repo: local
     hooks:
       - id: mypy
@@ -52,6 +52,14 @@ repos:
         always_run: true
         require_serial: true
         verbose: true
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest
+        entry: .venv/bin/pytest
+        language: system
+        pass_filenames: false
+        always_run: true
   # YAML
   - repo: https://github.com/google/yamlfmt
     rev: v0.20.0
