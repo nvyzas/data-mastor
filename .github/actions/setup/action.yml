@@ -14,7 +14,7 @@ runs:
         python-version-file: ".python-version"
     # uv
     - name: "Setup uv with caching enabled"
-      uses: astral-sh/setup-uv@v5
+      uses: astral-sh/setup-uv@v7
       with:
         enable-cache: true
         version: "0.9.8"
