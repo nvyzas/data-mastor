@@ -3,5 +3,11 @@
   "extends": [
     "config:base"
   ],
-  "pruneStaleBranches": true
+  "pruneStaleBranches": true,
+  "ignorePaths": [
+    "requirements.txt"
+  ],
+  "lockFileMaintenance": {
+    "enabled": true
+  }
 }
