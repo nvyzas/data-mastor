@@ -69,3 +69,8 @@ repos:
     rev: v1.37.1
     hooks:
       - id: yamllint
+  # Renovate
+  - repo: https://github.com/renovatebot/pre-commit-hooks
+    rev: 42.1.3
+    hooks:
+      - id: renovate-config-validator
