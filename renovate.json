@@ -11,6 +11,16 @@
   "pre-commit": {
     "enabled": true
   },
-  "rangeStrategy": "bump"
-  // CHORE: groups pyproject.toml, uv.lock and requirements.txt if problems persist
+  "rangeStrategy": "bump",
+  "packageRules": [
+    {
+      "matchFiles": [
+        "(^|/)pyproject\\.toml$",
+        "(^|/)requirements(\\.txt)?$",
+        "(^|/)uv\\.lock$"
+      ],
+      "groupName": "python dependency files (pyproject, requirements, uv.lock)",
+      "groupSlug": "python-deps-all"
+    }
+  ]
 }
