@@ -17,6 +17,9 @@ ENVVAR_ALLOWED_INTERFACE = "ALLOWED_INTERFACE"
 ENVVAR_PROXY_LEAKTEST_SCRIPT = "PROXY_LEAKTEST_SCRIPT"
 ENVVAR_LEAKTEST_SCRIPT = "LEAKTEST_SCRIPT"
 
+NO_UA_CHECK_WARNING = "User-agent header check is off!"
+NO_LEAK_TEST_WARNING = "DNS leak test is disabled!"
+
 
 # dns leak test utility function
 def _is_leaking(script, num_tries=3) -> bool:
@@ -58,7 +61,7 @@ def _interface_ip(interface_name) -> str:
 
 
 # utility function to get interface up/down status
-def _interface_is_up(interface_name) -> bool:
+def _interface_is_up(interface_name: str) -> bool:
     interfaces = psutil.net_if_stats()
     if interface_name in interfaces:
         return interfaces[interface_name].isup
@@ -92,9 +95,6 @@ class PrivacyCheckerDlMw:
         # set proxy/bindaddress
         if self.proxy_ip:
             request.meta["proxy"] = self.proxy_ip
-            if self.interface_ip:
-                msg = "Both 'proxy' and 'bindaddress' are set. Ignoring bindaddress"
-                spider.logger.warning(msg)
         elif self.interface_ip:
             request.meta["bindaddress"] = self.interface_ip
         spider.logger.debug(f"request.meta={request.meta}")
@@ -132,49 +132,45 @@ class PrivacyCheckerDlMw:
         # user-agent check
         self._check_ua = not os.environ.get(ENVVAR_NO_UA_TEST, False)
         if not self._check_ua:
-            spider.logger.warning("User-agent header check is off!")
+            spider.logger.warning(NO_UA_CHECK_WARNING)
 
-        # Initialize proxy and interface IP attributes
-        self.proxy_ip = ""
-        self.interface_ip = ""
+        # set proxy ip
+        self.proxy_ip = os.environ.get(ENVVAR_PROXY_IP)
+
+        # allowed interface check
+        iface = os.environ.get(ENVVAR_ALLOWED_INTERFACE)
+        if not self.proxy_ip and iface:
+            # check if interface is up
+            try:
+                is_up = _interface_is_up(iface)
+            except Exception as exc:
+                abort(spider, exc)
+                raise  # for type-checker/readabilty
+            if not is_up:
+                abort(spider, f"Allowed interface ({iface}) is down")
+            # get interface ip
+            try:
+                interface_ip = _interface_ip(iface)
+            except Exception as exc:
+                abort(spider, exc)
+                raise  # for type-checker/readability
+            if not interface_ip:
+                abort(spider, f"Allowed interface ({iface}) has no ip")
+            self.interface_ip = interface_ip
 
         # leaktest
-        _do_leaktest = not os.environ.get(ENVVAR_NO_LEAK_TEST, False)
-        if not _do_leaktest:
-            spider.logger.warning("DNS leak test is disabled!")
-        # check proxy
-        proxy_ip = os.environ.get(ENVVAR_PROXY_IP)
-        if proxy_ip:
-            leaktest_script = os.environ.get(
-                ENVVAR_PROXY_LEAKTEST_SCRIPT, "leaktest.sh"
-            )
-            # check for leaks
-            if _do_leaktest and _is_leaking(leaktest_script):
-                spider.logger.warning("Proxy dnsleak test failed!")
-            else:
-                self.proxy_ip = proxy_ip
+        if os.environ.get(ENVVAR_NO_LEAK_TEST, False):
+            spider.logger.warning(NO_LEAK_TEST_WARNING)
+            return
 
-        # check regular network interface
-        if not self.proxy_ip:
-            # check interface
-            interface = os.environ.get(ENVVAR_ALLOWED_INTERFACE)
-            if interface:
-                # REF split up try/except blocks
-                try:
-                    is_up = _interface_is_up(interface)
-                    interface_ip = _interface_ip(interface)
-                except ValueError as exc:
-                    abort(spider, f"{exc}")
-                else:
-                    if not is_up:
-                        abort(spider, f"Allowed interface '{interface}' is down")
-                    if not interface_ip:
-                        abort(spider, f"Allowed interface '{interface}' has no ip")
-                    self.interface_ip = interface_ip
-            # check for leaks
-            leaktest_script = os.environ.get(ENVVAR_LEAKTEST_SCRIPT, "leaktest.sh")
-            if _do_leaktest and _is_leaking(leaktest_script):
-                abort(spider, "Dnsleak test failed!")
+        # perform the test to the proxy / allowed interface
+        if self.proxy_ip:
+            script_var = ENVVAR_PROXY_LEAKTEST_SCRIPT
+        else:
+            script_var = ENVVAR_LEAKTEST_SCRIPT
+        script = os.environ.get(script_var, "leaktest.sh")
+        if _is_leaking(script):
+            abort(spider, "Dns leak test failed!")
 
 
 class ResponseSaverSpMw:

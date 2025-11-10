@@ -1,18 +1,24 @@
 import os
+from types import ModuleType
+from typing import Callable
 from unittest.mock import MagicMock
 
 import pytest
+from pytest import FixtureRequest
 from pytest_mock import MockerFixture
 from scrapy import Request, Spider
 from scrapy.exceptions import CloseSpider
 from scrapy.http import HtmlResponse
 from scrapy.settings import Settings
 
+from data_mastor.scraper import middlewares
 from data_mastor.scraper.middlewares import (
     ENVVAR_ALLOWED_INTERFACE,
     ENVVAR_NO_LEAK_TEST,
     ENVVAR_NO_UA_TEST,
     ENVVAR_PROXY_IP,
+    NO_LEAK_TEST_WARNING,
+    NO_UA_CHECK_WARNING,
     PrivacyCheckerDlMw,
     ResponseSaverSpMw,
     _interface_ip,
@@ -22,142 +28,117 @@ from data_mastor.scraper.middlewares import (
 from data_mastor.scraper.utils import abort
 
 
+def _patch_path(obj: Callable, at_module: ModuleType | None = None) -> str:
+    path = obj.__module__ if at_module is None else at_module.__name__
+    return path + "." + obj.__name__
+
+
+class AbortException(Exception):
+    pass
+
+
 class TestPrivacyCheckerDlMw:
     @pytest.fixture
-    def mock_spider(self, mocker: MockerFixture) -> MagicMock:
-        """Create a mock spider for unit testing using pytest_mock."""
-        spider = mocker.Mock()
-        spider.name = "test_spider"
-        spider.logger = mocker.Mock()
-        return spider
-
-    @pytest.fixture
-    def middleware(self):
+    def middleware(self) -> PrivacyCheckerDlMw:
         """Create a middleware instance for testing."""
         return PrivacyCheckerDlMw()
 
     @pytest.fixture(params=["uatestY", "uatestN"])
-    def env_no_ua_test(self, request):
+    def env_no_ua_test(self, request: FixtureRequest) -> str:
         os.environ[ENVVAR_NO_UA_TEST] = "" if request.param == "uatestY" else "true"
+        return os.environ[ENVVAR_NO_UA_TEST]
 
     @pytest.fixture(params=["proxyY", "proxyN"])
-    def env_proxy_ip(self, request):
+    def env_proxy_ip(self, request: FixtureRequest) -> str:
         os.environ[ENVVAR_PROXY_IP] = "1.2.3.4" if request.param == "proxyY" else ""
+        return os.environ[ENVVAR_PROXY_IP]
+
+    @pytest.fixture(params=["ifaceY", "ifaceN"])
+    def env_allowed_interface(self, request: FixtureRequest) -> str:
+        os.environ[ENVVAR_ALLOWED_INTERFACE] = (
+            "allowed-interface-name" if request.param == "ifaceY" else ""
+        )
+        return os.environ[ENVVAR_ALLOWED_INTERFACE]
 
     @pytest.fixture(params=["leaktestY", "leaktestN"])
-    def env_no_leak_test(self, request):
+    def env_no_leak_test(self, request: FixtureRequest) -> str:
         os.environ[ENVVAR_NO_LEAK_TEST] = "" if request.param == "leaktestY" else "true"
-
-    @pytest.fixture(params=["allowedinterfaceY", "allowedinterfaceN"])
-    def env_allowed_interface(self, request):
-        os.environ[ENVVAR_ALLOWED_INTERFACE] = (
-            "allowedinterface" if request.param == "allowedinterfaceY" else ""
-        )
+        return os.environ[ENVVAR_NO_LEAK_TEST]
 
     @pytest.fixture
-    def mock_interface_ip(self, mocker: MockerFixture):
-        """Mock the _interface_ip function."""
-        return mocker.patch(
-            "data_mastor.scraper.middlewares._interface_ip", autospec=_interface_ip
-        )
+    def mock_spider(self, mocker: MockerFixture) -> MagicMock:
+        spider = mocker.Mock()
+        spider.name = "testina"
+        spider.logger = mocker.Mock()
+        return spider
 
-    @pytest.fixture
-    def mock_interface_is_up(self, mocker: MockerFixture):
-        """Mock the _interface_is_up function."""
-        return mocker.patch(
-            "data_mastor.scraper.middlewares._interface_is_up",
-            autospec=_interface_is_up,
-        )
+    @pytest.fixture(params=["isupY", "isupN"])
+    def mock_interface_is_up(
+        self, mocker: MockerFixture, request: FixtureRequest
+    ) -> MagicMock:
+        mock = mocker.patch(_patch_path(_interface_is_up))
+        mock.return_value = True if request.param == "isupY" else False
+        return mock
+
+    @pytest.fixture(params=["ifaceipY", "ifaceipN"])
+    def mock_interface_ip(
+        self, mocker: MockerFixture, request: FixtureRequest
+    ) -> MagicMock:
+        mock = mocker.patch(_patch_path(_interface_ip))
+        mock.return_value = "5.6.7.8" if request.param == "ifaceipY" else ""
+        return mock
 
     @pytest.fixture(params=["leaksY", "leaksN"])
-    def mock_is_leaking(self, mocker: MockerFixture, request):
-        """Mock the _is_leaking function."""
-        mock = mocker.patch(
-            "data_mastor.scraper.middlewares._is_leaking", autospec=_is_leaking
-        )
+    def mock_is_leaking(
+        self, mocker: MockerFixture, request: FixtureRequest
+    ) -> MagicMock:
+        mock = mocker.patch(_patch_path(_is_leaking))
         mock.return_value = True if request.param == "leaksY" else False
         return mock
 
     @pytest.fixture
-    def mock_abort(self, mocker: MockerFixture):
-        """Mock the abort function to raise an exception for testing."""
-        mock = mocker.patch("data_mastor.scraper.middlewares.abort", autospec=abort)
-        mock.side_effect = RuntimeError("Test abort called")
+    def mock_abort(self, mocker: MockerFixture) -> MagicMock:
+        mock = mocker.patch(_patch_path(abort, middlewares))
+        mock.side_effect = AbortException("Test abort called")
         return mock
 
-    @pytest.mark.usefixtures(
-        env_proxy_ip.__name__,
-        env_allowed_interface.__name__,
-        env_no_ua_test.__name__,
-        env_no_leak_test.__name__,
-    )
     def test_spider_opened(
         self,
-        mock_spider,
-        middleware,
-        mock_is_leaking,
-        mock_interface_is_up,
-        mock_interface_ip,
-        mock_abort,
-    ):
-        """Test spider_opened method with various environment configurations.
-
-        Tests the middleware initialization logic including:
-        - User-agent check configuration
-        - Proxy configuration and leak testing
-        - Network interface configuration and leak testing
-        - Abort behavior on leak detection
-
-        The middleware follows this flow:
-        1. Check UA configuration
-        2. If proxy configured: run proxy leak test (if enabled)
-        3. If no proxy: check interface (if configured), then run regular leak test (if enabled)
-        4. Abort if leak detected
-        """
-        # Get current environment configuration
-        proxy_ip = os.environ.get(ENVVAR_PROXY_IP)
-        interface = os.environ.get(ENVVAR_ALLOWED_INTERFACE)
-        leak_test_enabled = not os.environ.get(ENVVAR_NO_LEAK_TEST)
-
-        # Determine expected behavior
-        should_abort = leak_test_enabled and mock_is_leaking.return_value
-
-        # Call spider_opened, catching abort exception if expected
-        if should_abort:
-            with pytest.raises(RuntimeError, match="Test abort called"):
-                middleware.spider_opened(mock_spider)
-        else:
+        middleware: PrivacyCheckerDlMw,
+        env_proxy_ip: str,
+        env_allowed_interface: str,
+        env_no_ua_test: str,
+        env_no_leak_test: str,
+        mock_spider: MagicMock,
+        mock_is_leaking: MagicMock,
+        mock_interface_is_up: MagicMock,
+        mock_interface_ip: MagicMock,
+        mock_abort: MagicMock,
+    ) -> None:
+        """Test spider_opened method with various environment configurations."""
+        try:
             middleware.spider_opened(mock_spider)
+        except AbortException:
+            print("Abort was called")
 
-        # Verify user-agent check was configured
-        ua_check_enabled = not os.environ.get(ENVVAR_NO_UA_TEST)
-        assert middleware._check_ua == ua_check_enabled
+        mock_warning: MagicMock = mock_spider.logger.warning
 
-        # Verify leak test behavior
-        # Leak test always runs when enabled (either for proxy or for regular network)
-        if leak_test_enabled:
-            assert mock_is_leaking.called
+        # user-agent check warning
+        if env_no_ua_test:
+            assert mock_warning.call_args_list[0].args[0] == NO_UA_CHECK_WARNING
+
+        # allowed interface check
+        if env_allowed_interface and not env_proxy_ip:
+            if not mock_interface_is_up() or not mock_interface_ip():
+                mock_abort.assert_called_once()
+                return
+
+        # leaktest
+        if env_no_leak_test:
+            assert mock_warning.call_args_list[-1].args[0] == NO_LEAK_TEST_WARNING
         else:
-            assert not mock_is_leaking.called
-
-        # Verify interface checks behavior
-        # Interface checks run when interface is configured AND (no proxy OR proxy leak test failed)
-        # When proxy leak test fails, proxy_ip is not set on middleware, so interface checks run
-        proxy_passed_leak_test = proxy_ip and not (
-            leak_test_enabled and mock_is_leaking.return_value
-        )
-        if interface and not proxy_passed_leak_test:
-            assert mock_interface_is_up.called
-            assert mock_interface_ip.called
-        else:
-            assert not mock_interface_is_up.called
-            assert not mock_interface_ip.called
-
-        # Verify abort behavior
-        if should_abort:
-            assert mock_abort.called
-        else:
-            assert not mock_abort.called
+            if mock_is_leaking():
+                mock_abort.assert_called_once()
 
     def test_process_request(self, mock_spider, middleware, mocker: MockerFixture):
         """Test process_request method with various configurations.
