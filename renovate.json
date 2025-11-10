@@ -21,6 +21,15 @@
       ],
       "groupName": "python dependency files (pyproject, requirements, uv.lock)",
       "groupSlug": "python-deps-all"
+    },
+    {
+      "matchDatasources": ["docker"],
+      "enabled": false
     }
+    // CHORE Try this is the above does not prevent python bump PR
+    // {
+    //   "matchManagers": ["dockerfile"],
+    //   "enabled": false
+    // }
   ]
 }
