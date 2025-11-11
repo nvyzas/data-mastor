@@ -1,10 +1,12 @@
 import os
 import socket
 import subprocess
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Self
 
 import psutil
+from itemadapter import ItemAdapter
 from scrapy import Request, Spider, signals
 from scrapy.http import Response
 
@@ -177,7 +179,6 @@ class ResponseSaverSpMw:
     """Spider-agnostic spider middleware to save HTML responses to files.
 
     This middleware saves HTML responses to disk when enabled via the SAVE_HTML setting.
-    It requires the OUT_DIR setting to be configured and will abort if it's not set.
 
     For spiders in local mode (scraping from local files), this middleware also rewrites
     Request URLs to point to the saved local HTML files instead of the original URLs.
@@ -189,15 +190,11 @@ class ResponseSaverSpMw:
             'data_mastor.scraper.middlewares.ResponseSaverDLMW': 950,
         }
 
-        # Required: configure output directory
-        OUT_DIR = 'path/to/output'
-
         # Optional: enable HTML saving (default: False)
         SAVE_HTML = True
     """
 
-    @staticmethod
-    def _generate_filename(url: str) -> str:
+    def _generate_html_path(self, out_dir: Path, url: str) -> Path:
         """Generate a filename from a URL.
 
         Args:
@@ -208,31 +205,26 @@ class ResponseSaverSpMw:
         """
         if url.startswith("file://"):
             # For local files, use the filename
-            return Path(url.replace("file://", "")).name
-        else:
-            # For web URLs, create a safe filename from the last part of URL
-            parts = url.rstrip("/").split("/")
-            filename = parts[-1] if parts else "response"
-            # Remove query parameters and ensure .html extension
-            filename = filename.split("?")[0]
-            if not filename.endswith(".html"):
-                filename += ".html"
-            return filename
+            return Path(url.replace("file://", ""))
+        # For web URLs, create a safe filename from the last part of URL
+        parts = url.rstrip("/").split("/")
+        filename = parts[-1]
+        # Remove query parameters and ensure .html extension
+        filename = filename.split("?")[0]
+        if not filename.endswith(".html"):
+            filename += ".html"
+        return out_dir / filename
 
-    @staticmethod
-    def _is_local_mode(spider: Spider) -> bool:
-        """Check if spider is in local mode (scraping from local files).
+    def _generate_html_url(self, out_dir: Path, url: str) -> str:
+        html_path = self._generate_html_path(out_dir, url)
+        return f"file://{html_path.absolute()}"
 
-        Args:
-            spider: The spider instance
-
-        Returns:
-            True if at least one start_url starts with 'file://', False otherwise
-        """
-        start_urls = getattr(spider, "start_urls", [])
-        return any(url.startswith("file://") for url in start_urls)
-
-    def process_spider_output(self, response: Response, result, spider: Spider):
+    def process_spider_output(
+        self,
+        response: Response,
+        result: Iterable[Request | ItemAdapter],
+        spider: Spider,
+    ):
         """Process spider output, saving HTML and rewriting URLs for local mode.
 
         Args:
@@ -244,38 +236,23 @@ class ResponseSaverSpMw:
             Request and/or Item objects from result, with Request URLs rewritten
             to local file paths if in local mode
         """
-        # Check if we should save HTML
+        # Get output directory from settings - abort if not set
+        out_dir = spider.settings.get("OUT_DIR")
+        if not out_dir:
+            abort(spider, "OUT_DIR setting is required for ResponseSaverDLMW")
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save response as html (if SAVE_HTML is true)
         save_html = spider.settings.getbool("SAVE_HTML", False)
-
-        saved_file_path = None
         if save_html:
-            # Get output directory from settings - abort if not set
-            out_dir = spider.settings.get("OUT_DIR")
-            if not out_dir:
-                abort(spider, "OUT_DIR setting is required for ResponseSaverDLMW")
-
-            # Convert to Path if needed
-            out_dir = Path(out_dir)
-
-            # Ensure directory exists
-            out_dir.mkdir(parents=True, exist_ok=True)
-
-            # Generate filename from URL
-            html_file = self._generate_filename(response.url)
-
-            # Save the response body
-            saved_file_path = out_dir / html_file
-            with open(saved_file_path, "wb") as file:
+            html_path = self._generate_html_path(out_dir, response.url)
+            with open(html_path, "wb") as file:
                 file.write(response.body)
 
-        # Check if we're in local mode
-        is_local_mode = self._is_local_mode(spider)
-
-        # Process the result
+        # Redirect requests to a previously saved html file (if in local mode)
         for item in result:
-            # If in local mode and item is a Request, rewrite URL to local file
-            if is_local_mode and isinstance(item, Request) and saved_file_path:
-                # Rewrite the request URL to point to the saved local file
-                item = item.replace(url=f"file://{saved_file_path.absolute()}")
-
+            if isinstance(item, Request) and response.url.startswith("file://"):
+                html_url = self._generate_html_url(out_dir, item.url)
+                item = item.replace(url=html_url)
             yield item

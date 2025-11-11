@@ -188,8 +188,16 @@ class Baze(Spider):
         dlmw_base = spider.settings[DLMWBASE_KEY]
         dlmw = spider.settings[DLMW_KEY]
 
-        # Only add PrivacyCheckerDLMW if not in local mode
-        if not spider._local_mode:
+        # apply ResponseSaver
+        dlmw[ResponseSaverSpMw] = 950
+
+        # apply OffsiteDownloadMiddleware / PrivacyChecker depending on scraping mode
+        if spider.local_mode:
+            # effectively disable OffsiteDownloadMiddleware
+            cls.allowed_domains = []
+            print(f"Allowed domains were set to: {cls.allowed_domains}")
+        else:
+            # add PrivacyChecker
             pos = between_middlewares(
                 {**dlmw_base, **dlmw},
                 [
@@ -199,14 +207,6 @@ class Baze(Spider):
                 ],
             )
             dlmw[PrivacyCheckerDlMw] = pos
-
-        if spider.save_html:
-            dlmw[ResponseSaverSpMw] = 950
-
-        # effectively disable OffsiteDownloadMiddleware if scraping locally
-        if spider._local_mode:
-            cls.allowed_domains = []
-            print(f"Allowed domains were set to: {cls.allowed_domains}")
 
         # conditionally create out_dir and write the used args yaml file
         def _pathstr(path: str | Path | None):
