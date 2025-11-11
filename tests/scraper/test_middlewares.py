@@ -9,6 +9,7 @@ from pytest_mock import MockerFixture
 from scrapy import Request, Spider
 from scrapy.exceptions import CloseSpider
 from scrapy.http import HtmlResponse
+from scrapy.http.headers import Headers
 from scrapy.settings import Settings
 
 from data_mastor.scraper import middlewares
@@ -140,66 +141,62 @@ class TestPrivacyCheckerDlMw:
             if mock_is_leaking():
                 mock_abort.assert_called_once()
 
-    def test_process_request(self, mock_spider, middleware, mocker: MockerFixture):
-        """Test process_request method with various configurations.
-
-        Tests the request processing logic including:
-        - Proxy configuration (sets request.meta["proxy"])
-        - Interface/bindaddress configuration (sets request.meta["bindaddress"])
-        - User-Agent header validation (aborts on missing or bad UA)
-        - Proper precedence (proxy takes priority over interface)
-        """
-        # Test 1: Proxy configuration
-        middleware._check_ua = False
-        middleware.proxy_ip = "http://proxy:8080"
-        middleware.interface_ip = ""
-
+    def test_process_request(
+        self,
+        mock_spider: MagicMock,
+        middleware: PrivacyCheckerDlMw,
+        mock_abort: MagicMock,
+    ) -> None:
+        # create dummy request
         request = Request("http://example.com")
-        result = middleware.process_request(request, mock_spider)
 
+        # Test 1  - User-Agent validation
+        middleware._check_ua = True
+        middleware._proxy_ip = ""  #
+        middleware._interface_ip = ""
+
+        # Test 1a - good User-Agent
+        request.headers = Headers({"User-Agent": "good-user-agent"})
+        result = middleware.process_request(request, mock_spider)
+        assert result is None
+        assert not mock_abort.called
+
+        # Test 1b - missing User-Agent
+        request.headers = Headers({})
+        with pytest.raises(AbortException):
+            middleware.process_request(request, mock_spider)
+        mock_abort.assert_called_once()
+        mock_abort.reset_mock()
+
+        # Test 1c - bad User-Agent
+        request.headers = Headers({"User-Agent": "bot"})
+        with pytest.raises(AbortException):
+            middleware.process_request(request, mock_spider)
+        mock_abort.assert_called_once()
+        mock_abort.reset_mock()
+
+        # Test 1d - check disabled (bad User-Agent)
+        middleware._check_ua = False
+        result = middleware.process_request(request, mock_spider)
+        assert result is None
+        assert not mock_abort.called
+
+        # Test 2 - proxy meta attribute
+        request._meta = {}
+        middleware._proxy_ip = "http://proxy:8080"
+        result = middleware.process_request(request, mock_spider)
         assert result is None
         assert request.meta["proxy"] == "http://proxy:8080"
         assert "bindaddress" not in request.meta
 
-        # Test 2: Interface/bindaddress configuration
-        middleware.proxy_ip = ""
-        middleware.interface_ip = "192.168.1.100"
-
-        request = Request("http://example.com")
+        # Test 3 - bindaddress meta attribute
+        request._meta = {}
+        middleware._proxy_ip = ""
+        middleware._interface_ip = "192.168.1.100"
         result = middleware.process_request(request, mock_spider)
-
         assert result is None
         assert request.meta["bindaddress"] == "192.168.1.100"
         assert "proxy" not in request.meta
-
-        # Test 3: User-Agent validation - missing User-Agent
-        mock_abort_local = mocker.patch(
-            "data_mastor.scraper.middlewares.abort", autospec=abort
-        )
-        mock_abort_local.side_effect = RuntimeError("Test abort called")
-
-        middleware._check_ua = True
-        middleware.proxy_ip = ""
-        middleware.interface_ip = ""
-
-        request = Request("http://example.com")
-        with pytest.raises(RuntimeError, match="Test abort called"):
-            middleware.process_request(request, mock_spider)
-        assert mock_abort_local.called
-
-        # Test 4: User-Agent validation - bad User-Agent (contains "bot")
-        mock_abort_local.reset_mock()
-        request = Request("http://example.com", headers={"User-Agent": "mybot"})
-        with pytest.raises(RuntimeError, match="Test abort called"):
-            middleware.process_request(request, mock_spider)
-        assert mock_abort_local.called
-
-        # Test 5: User-Agent validation - good User-Agent
-        mock_abort_local.reset_mock()
-        request = Request("http://example.com", headers={"User-Agent": "Mozilla/5.0"})
-        result = middleware.process_request(request, mock_spider)
-        assert result is None
-        assert not mock_abort_local.called
 
 
 class TestResponseSaverSPMW:

@@ -82,7 +82,7 @@ class PrivacyCheckerDlMw:
         return dlmw
 
     def process_request(self, request: Request, spider: Spider):
-        # Check the User-Agent header
+        # check the User-Agent header
         if self._check_ua:
             ua = request.headers.get("User-Agent")
             if ua is None:
@@ -93,10 +93,10 @@ class PrivacyCheckerDlMw:
                     abort(spider, f"User-Agent header '{ua_str}' is not permitted")
 
         # set proxy/bindaddress
-        if self.proxy_ip:
-            request.meta["proxy"] = self.proxy_ip
-        elif self.interface_ip:
-            request.meta["bindaddress"] = self.interface_ip
+        if self._proxy_ip:
+            request.meta["proxy"] = self._proxy_ip
+        elif self._interface_ip:
+            request.meta["bindaddress"] = self._interface_ip
         spider.logger.debug(f"request.meta={request.meta}")
 
         # Must either:
@@ -135,11 +135,11 @@ class PrivacyCheckerDlMw:
             spider.logger.warning(NO_UA_CHECK_WARNING)
 
         # set proxy ip
-        self.proxy_ip = os.environ.get(ENVVAR_PROXY_IP)
+        self._proxy_ip = os.environ.get(ENVVAR_PROXY_IP)
 
         # allowed interface check
         iface = os.environ.get(ENVVAR_ALLOWED_INTERFACE)
-        if not self.proxy_ip and iface:
+        if not self._proxy_ip and iface:
             # check if interface is up
             try:
                 is_up = _interface_is_up(iface)
@@ -156,7 +156,7 @@ class PrivacyCheckerDlMw:
                 raise  # for type-checker/readability
             if not interface_ip:
                 abort(spider, f"Allowed interface ({iface}) has no ip")
-            self.interface_ip = interface_ip
+            self._interface_ip = interface_ip
 
         # leaktest
         if os.environ.get(ENVVAR_NO_LEAK_TEST, False):
@@ -164,7 +164,7 @@ class PrivacyCheckerDlMw:
             return
 
         # perform the test to the proxy / allowed interface
-        if self.proxy_ip:
+        if self._proxy_ip:
             script_var = ENVVAR_PROXY_LEAKTEST_SCRIPT
         else:
             script_var = ENVVAR_LEAKTEST_SCRIPT
