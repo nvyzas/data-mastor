@@ -4,7 +4,6 @@ import logging
 import os
 from collections.abc import Iterable
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 import pytest

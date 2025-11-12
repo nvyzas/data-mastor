@@ -13,7 +13,7 @@ from scrapy.crawler import CrawlerProcess
 from scrapy.settings import SETTINGS_PRIORITIES, Settings
 from scrapy.utils.project import get_project_settings
 
-from data_mastor.cliutils import Opt, parse_yamlargs, yaml_get
+from data_mastor.cliutils import Opt, parse_yamlargs, yamldict_get
 from data_mastor.scraper.middlewares import PrivacyCheckerDlMw, ResponseSaverSpMw
 from data_mastor.scraper.pipelines import TIMESTAMP_FMT, ListingStorer, SourceStorer
 from data_mastor.scraper.utils import (
@@ -490,9 +490,7 @@ class Meta(type):
         if not info_file:
             return c
         codename = name[:-3].lower()
-        info = yaml_get(info_file, [codename])
-        if not info:
-            print(f"Could not find info for shop '{codename}'")
+        info = yamldict_get(info_file, [codename], doraise=False)
         spider_info = info.get(spidertype.lower(), {})
         # set custom classvars: shop name, html_fields
         setattr(c, "shop", info.get("name", codename))

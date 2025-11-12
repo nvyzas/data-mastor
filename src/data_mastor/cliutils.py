@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 from typing import Any
 
@@ -32,63 +31,112 @@ def get_yamldict_key(
         return default
 
 
-def yaml_get(yamlpath: str | Path, keys: list[str] | str = "", doraise: bool = False):
+def yamldict_get(
+    yamlpath: str | Path,
+    keys: list[str] | str | None = None,
+    doraise: bool = True,
+    debug: bool = False,
+):
+    exc: Exception
+
     yamlpath = Path(yamlpath)
-    if yamlpath.is_file():
-        with open(yamlpath) as file:
-            yamlpart = yaml.safe_load(file)
-        if not keys:
-            return yamlpart
-        if isinstance(keys, str):
-            keys = [keys]
-        for key in keys:
-            if not isinstance(yamlpart, dict):
-                msg = f"Yamlpart is {type(yamlpart)}, not a dictionary"
-                if doraise:
-                    raise TypeError(msg)
-                else:
-                    print(msg)
-                    return {}
-            if key not in yamlpart.keys():
-                msg = f"Key '{key}' was not found in yaml dict"
-                if doraise:
-                    raise KeyError(msg)
-                else:
-                    print(msg)
-                    return {}
-            yamlpart = yamlpart[key]
-        return yamlpart
-    else:
-        msg = f"File '{yamlpath}' was not found"
+    if not yamlpath.exists():
+        exc = FileNotFoundError(f"File '{yamlpath}' does not exist")
         if doraise:
-            raise FileNotFoundError(msg)
+            raise exc
+        elif debug:
+            print(exc)
+            return {}
         else:
-            print(msg)
             return {}
 
+    with open(yamlpath) as file:
+        yamlpart = yaml.safe_load(file)
+    if keys is None:
+        return yamlpart
+    if isinstance(keys, str):
+        keys = [keys]
+    for key in keys:
+        if not isinstance(yamlpart, dict):
+            exc = TypeError(f"Yamlpart before key '{key}' is not a dictionary")
+            if doraise:
+                raise exc
+            elif debug:
+                print(exc)
+                return {}
+            else:
+                return {}
+        if key not in yamlpart.keys():
+            exc = KeyError(f"Key '{key}' was not found in yaml dict")
+            if doraise:
+                raise exc
+            elif debug:
+                print(exc)
+                return {}
+            else:
+                return {}
+        yamlpart = yamlpart[key]
 
-def yaml_go_cmd(yamlpath):
-    yamlpart = yaml_get(yamlpath)
-    if not isinstance(yamlpart, dict):
-        raise TypeError(f"{yamlpart} is not a dictionary")
-    keys = list(yamlpart.keys())
-    index = keys.index("go")
-    return keys[index + 1]
+    return yamlpart
 
 
-YAML_PATH_ENVVAR = "YAML_PATH"
+ARGS_FILENAME = "args.yml"
+
+
+def run_yamlcmd(app: typer.Typer, key: str | None = None):
+    yamlpath = Path(ARGS_FILENAME)
+    yamlpart = yamldict_get(yamlpath, keys=key)
+    cmdpath: list[str] = []
+    while True:
+        if not isinstance(yamlpart, dict):
+            break
+        cmd_keys = [k for k in yamlpart if "!" in k]
+        if len(cmd_keys) > 1:
+            raise KeyError(f"There are more than one keys with '!': {cmd_keys}")
+        if len(cmd_keys) == 0:
+            break
+        cmdpath.append(cmd_keys[0])
+        yamlpart = yamlpart[cmdpath[-1]]
+    cmdpath[-1] = cmdpath[-1].replace("!", "")
+
+    # register the yaml command alone
+    cmd = None
+    for reg_cmd in app.registered_commands:
+        if reg_cmd.callback is None:
+            raise RuntimeError(f"Encountered NULL callback: {reg_cmd.callback}")
+        if reg_cmd.callback.__name__ == cmdpath[-1]:
+            cmd = reg_cmd
+            break
+    else:
+        raise RuntimeError(f"Typer app has no registed command named: {cmd}")
+    app.registered_commands = [cmd]
+
+    func = None
+    if app.registered_callback is not None:
+        func = app.registered_callback.callback
+
+    # add/edit callback to parse the yaml args
+    def parsing_callback(ctx: typer.Context):
+        print("Running parsing_callback")
+        parse_yamlargs(ctx, key=key, edit_ctx_values=True)
+        if func is not None:
+            print(f"Running ex-callback: {func.__name__}")
+            func(ctx)
+
+    app.callback()(parsing_callback)
+    print(f"Running command from yaml {yamlpath}: {'->'.join(cmdpath)}")
+
+    # run app
+    app()
 
 
 def parse_yamlargs(ctx: typer.Context, key: str | None = None, edit_ctx_values=True):
-    yamlpath = Path(os.environ.get(YAML_PATH_ENVVAR, "args.yml"))
-    cmdname = key or ctx.invoked_subcommand or ctx.command.name or ""
-    yamlargs = yaml_get(yamlpath, cmdname, doraise=False)
-    if not yamlargs:
-        print(f"There are no yamlargs in {yamlpath.absolute()} under key '{cmdname}'")
-        return {}
-    print(f"Found yamlargs in {yamlpath.absolute()} under key '{cmdname}':")
+    cmdname = key or ctx.invoked_subcommand or ctx.command.name or None
+    yamlargs = yamldict_get(ARGS_FILENAME, cmdname)
+    print(f"Yamlargs in {Path(ARGS_FILENAME).absolute()} under key '{cmdname}':")
     print(yamlargs)
 
+    # return and/or edit params
     params = ctx.params if edit_ctx_values else {}
     for k, v in yamlargs.items():
         if k not in ctx.params:
