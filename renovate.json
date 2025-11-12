@@ -1,10 +1,9 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "config:base"
+    "config:recommended"
   ],
   "pruneStaleBranches": true,
-  // CHORE: remove this if renovate tries to auto-udpate lockfile ALONE
   "lockFileMaintenance": {
     "enabled": true
   },
@@ -14,7 +13,7 @@
   "rangeStrategy": "bump",
   "packageRules": [
     {
-      "matchFiles": [
+      "matchFileNames": [
         "(^|/)pyproject\\.toml$",
         "(^|/)requirements(\\.txt)?$",
         "(^|/)uv\\.lock$"
@@ -23,13 +22,10 @@
       "groupSlug": "python-deps-all"
     },
     {
-      "matchDatasources": ["docker"],
+      "matchDatasources": [
+        "docker"
+      ],
       "enabled": false
     }
-    // CHORE Try this is the above does not prevent python bump PR
-    // {
-    //   "matchManagers": ["dockerfile"],
-    //   "enabled": false
-    // }
   ]
 }
