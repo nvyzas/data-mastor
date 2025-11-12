@@ -1,9 +1,12 @@
+import logging
 from collections.abc import Callable
 
 from scrapy import Spider
 
 DLMW_KEY = "DOWNLOADER_MIDDLEWARES"
 DLMWBASE_KEY = "DOWNLOADER_MIDDLEWARES_BASE"
+SPMW_KEY = "SPIDER_MIDDLEWARES"
+SPMWBASE_KEY = "SPIDER_MIDDLEWARES"
 
 
 # used by spiders
@@ -67,3 +70,16 @@ def abort(spider: Spider, exc: Exception | str, if_fail: Callable | None = None)
             if_fail()
         raise e
     raise exc
+
+
+# scrapy logging
+def configure_scrapy_logging_levels() -> None:
+    logging.getLogger("scrapy.core.engine").setLevel("DEBUG")
+    logging.getLogger("scrapy.core.scraper").setLevel("INFO")
+    logging.getLogger("scrapy.utils.log").setLevel("INFO")
+    logging.getLogger("scrapy-playwright").setLevel("INFO")
+    logging.getLogger("scrapy_user_agents.user_agent_picker").setLevel("ERROR")
+    logging.getLogger("scrapy_user_agents.user_agent_picker").setLevel("ERROR")
+    logging.getLogger("scrapy_user_agents.middlewares").setLevel("INFO")
+    logging.getLogger("scrapy.addons").setLevel("WARNING")
+    logging.getLogger("asyncio").setLevel("INFO")

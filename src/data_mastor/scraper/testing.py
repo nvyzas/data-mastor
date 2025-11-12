@@ -16,6 +16,7 @@ from data_mastor.cliutils import get_yamldict_key
 from data_mastor.dbman import get_engine
 from data_mastor.scraper.models import Base
 from data_mastor.scraper.spiders import USED_ARGS_FILENAME, Baze, timestamp
+from data_mastor.scraper.utils import configure_scrapy_logging_levels
 
 # dummy
 importable_fixture = "dummy"
@@ -145,6 +146,8 @@ def configure_spidercls(
     testmodule and/or modify the spidercls fixture itself.
     """
     logging.debug("Running configure_spidercls fixture")
+    # configure scrapy logging levels
+    configure_scrapy_logging_levels()
     # get spidercls config (can be defined at testcase level, should precede others)
     _settings = spidercls._settings
     _spiderargs = spidercls._spiderargs
@@ -177,7 +180,6 @@ def configure_spidercls(
     # apply config
     spidercls._settings = {**yaml_settings, **TESTING_SETTINGS, **_settings}
     spidercls._spiderargs = {**yaml_spiderargs, **TESTING_SPIDERARGS, **_spiderargs}
-    logging.debug(f"Configuration:\n{spidercls._settings}\n{spidercls._spiderargs}")
     yield
     spidercls._settings = {}
     spidercls._spiderargs = {}

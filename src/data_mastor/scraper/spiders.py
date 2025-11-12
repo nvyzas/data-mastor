@@ -16,7 +16,12 @@ from scrapy.utils.project import get_project_settings
 from data_mastor.cliutils import Opt, parse_yamlargs, yaml_get
 from data_mastor.scraper.middlewares import PrivacyCheckerDlMw, ResponseSaverSpMw
 from data_mastor.scraper.pipelines import TIMESTAMP_FMT, ListingStorer, SourceStorer
-from data_mastor.scraper.utils import DLMW_KEY, DLMWBASE_KEY, between_middlewares
+from data_mastor.scraper.utils import (
+    DLMW_KEY,
+    DLMWBASE_KEY,
+    SPMW_KEY,
+    between_middlewares,
+)
 
 if TYPE_CHECKING:
     pass
@@ -187,17 +192,14 @@ class Baze(Spider):
         # apply middlewares
         dlmw_base = spider.settings[DLMWBASE_KEY]
         dlmw = spider.settings[DLMW_KEY]
+        spmw = spider.settings[SPMW_KEY]
 
-        # apply ResponseSaver
-        dlmw[ResponseSaverSpMw] = 950
+        # apply ResponseSaver (Spider Middleware)
+        if spider.local_mode or spider.save_html:
+            spmw[ResponseSaverSpMw] = 950
 
-        # apply OffsiteDownloadMiddleware / PrivacyChecker depending on scraping mode
-        if spider.local_mode:
-            # effectively disable OffsiteDownloadMiddleware
-            cls.allowed_domains = []
-            print(f"Allowed domains were set to: {cls.allowed_domains}")
-        else:
-            # add PrivacyChecker
+        # apply PrivacyChecker (Downloader Middleware)
+        if not spider.local_mode:
             pos = between_middlewares(
                 {**dlmw_base, **dlmw},
                 [
@@ -207,6 +209,11 @@ class Baze(Spider):
                 ],
             )
             dlmw[PrivacyCheckerDlMw] = pos
+
+        # effectively disable OffsiteDownloadMiddleware
+        if spider.local_mode:
+            cls.allowed_domains = []
+            print(f"Allowed domains were set to: {cls.allowed_domains}")
 
         # conditionally create out_dir and write the used args yaml file
         def _pathstr(path: str | Path | None):

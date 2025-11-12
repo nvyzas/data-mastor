@@ -265,7 +265,7 @@ class TestResponseSaverSPMW:
         res_local = list(mw.process_spider_output(response_local, [item, req2], spider))
         assert res_local[0] == item
         assert isinstance(res_local[1], Request)
-        assert res_local[1].url == mw._generate_html_url(tmpdir, res_local[1].url)
+        assert res_local[1].url == mw._generate_html_url(res_local[1].url)
 
 
 if __name__ == "__main__":

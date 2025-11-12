@@ -176,47 +176,35 @@ class PrivacyCheckerDlMw:
 
 
 class ResponseSaverSpMw:
-    """Spider-agnostic spider middleware to save HTML responses to files.
-
-    This middleware saves HTML responses to disk when enabled via the SAVE_HTML setting.
+    """Saves HTML responses to disk when enabled via the SAVE_HTML setting.
 
     For spiders in local mode (scraping from local files), this middleware also rewrites
     Request URLs to point to the saved local HTML files instead of the original URLs.
-
-    Configuration:
-        Enable in settings.py or custom_settings:
-
-        SPIDER_MIDDLEWARES = {
-            'data_mastor.scraper.middlewares.ResponseSaverDLMW': 950,
-        }
-
-        # Optional: enable HTML saving (default: False)
-        SAVE_HTML = True
     """
 
+    # SOMEDAY make these into settings
+    SUFFIXES = ["_page"]
+    SUFFIX = "_pg"
+
     def _generate_html_path(self, out_dir: Path, url: str) -> Path:
-        """Generate a filename from a URL.
+        # get the last part of the url (local or not)
+        tip = url.rstrip("/").split("/")[-1]
+        # replace forbidden filename characters
+        filename = tip.replace("?", "_").replace("=", "")
+        # remove ".html" (could be in the middle of local urls)
+        filename = filename.replace(".html", "")
+        # keep a single unified suffix
+        for suffix in self.SUFFIXES:
+            filename = filename.replace(suffix, self.SUFFIX)
+        # for local urls
+        page_split = filename.split(self.SUFFIX)
+        if len(page_split) > 2:
+            filename = page_split[0] + self.SUFFIX + page_split[-1]
+        return out_dir / (filename + ".html")
 
-        Args:
-            url: The URL string
-
-        Returns:
-            A safe filename for saving the HTML content
-        """
-        if url.startswith("file://"):
-            # For local files, use the filename
-            return Path(url.replace("file://", ""))
-        # For web URLs, create a safe filename from the last part of URL
-        parts = url.rstrip("/").split("/")
-        filename = parts[-1]
-        # Remove query parameters and ensure .html extension
-        filename = filename.split("?")[0]
-        if not filename.endswith(".html"):
-            filename += ".html"
-        return out_dir / filename
-
-    def _generate_html_url(self, out_dir: Path, url: str) -> str:
-        html_path = self._generate_html_path(out_dir, url)
+    def _generate_html_url(self, url: str) -> str:
+        in_dir = Path("/".join(url.replace("file://", "").rstrip("/").split("/")[:-1]))
+        html_path = self._generate_html_path(in_dir, url)
         return f"file://{html_path.absolute()}"
 
     def process_spider_output(
@@ -225,17 +213,6 @@ class ResponseSaverSpMw:
         result: Iterable[Request | ItemAdapter],
         spider: Spider,
     ):
-        """Process spider output, saving HTML and rewriting URLs for local mode.
-
-        Args:
-            response: The response being processed
-            result: An iterable of Request and/or Item objects
-            spider: The spider instance
-
-        Yields:
-            Request and/or Item objects from result, with Request URLs rewritten
-            to local file paths if in local mode
-        """
         # Get output directory from settings - abort if not set
         out_dir = spider.settings.get("OUT_DIR")
         if not out_dir:
@@ -253,6 +230,6 @@ class ResponseSaverSpMw:
         # Redirect requests to a previously saved html file (if in local mode)
         for item in result:
             if isinstance(item, Request) and response.url.startswith("file://"):
-                html_url = self._generate_html_url(out_dir, item.url)
+                html_url = self._generate_html_url(item.url)
                 item = item.replace(url=html_url)
             yield item
