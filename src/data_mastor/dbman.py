@@ -1,13 +1,17 @@
+import importlib
 import os
 import re
 import shutil
 from datetime import datetime
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import pandas as pd
 import typer
 from deepdiff import DeepDiff
+from deepdiff.helper import COLORED_VIEW
+from rich import print as rprint
 from sqlalchemy import Engine, MetaData, create_engine
 
 from data_mastor.cliutils import get_yamldict_key
@@ -24,7 +28,15 @@ def get_db_url():
     return os.environ["DB_URL"]
 
 
+def import_extension_module():
+    """Import project-specific model subclasses so their mappers are registered."""
+    extension_module: str | None = os.environ.get("DB_MODULE", None)
+    if extension_module is not None:
+        importlib.import_module(extension_module)
+
+
 def get_engine(**kwargs):
+    import_extension_module()
     global _engine
     if _engine is None:
         _engine = create_engine(get_db_url(), **kwargs)
@@ -32,14 +44,14 @@ def get_engine(**kwargs):
 
 
 # now utility function
-def _now():
+def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
 
 # DATABASE MANAGEMENT
 
 
-def get_tables_metadata(metadata_obj: MetaData) -> dict[str, dict[str, str]]:
+def _tables_dict(metadata_obj: MetaData) -> dict[str, dict[str, str]]:
     ret = {}
     tablesdict = metadata_obj.tables
     for tablename, table in tablesdict.items():
@@ -47,23 +59,55 @@ def get_tables_metadata(metadata_obj: MetaData) -> dict[str, dict[str, str]]:
     return ret
 
 
-@app.command(name="printschema")
-def print_tables_metadata():
+@app.callback()
+def callback(ctx: typer.Context):
     engine = get_engine()
-    db_metadata = MetaData()
-    db_metadata.reflect(bind=engine)
-    db_md = get_tables_metadata(db_metadata)
-    print(db_md)
+    ctx.obj = engine
 
 
 @app.command()
-def migrate(yamlconf_file: Path = Path("conf.yml")):
+def dbmd(ctx: typer.Context, echo=True):
+    engine = ctx.obj
+    db_metadata = MetaData()
+    db_metadata.reflect(bind=engine)
+    db_md = _tables_dict(db_metadata)
+    if echo:
+        rprint(db_md)
+    return db_md
+
+
+@app.command()
+def srcmd(echo=True):
+    src_metadata = _tables_dict(Base.metadata)
+    if echo:
+        rprint(src_metadata)
+    return src_metadata
+
+
+@app.command()
+def diff(ctx: typer.Context, echo=True):
+    db_md = dbmd(ctx, echo=False)
+    src_md = srcmd(echo=False)
+    diffs = DeepDiff(
+        db_md,
+        src_md,
+        ignore_order=True,
+        view=COLORED_VIEW,
+        exclude_paths=["root['alembic_version']"],
+    )
+    if echo:
+        print(diffs)
+    return db_md, src_md, diffs
+
+
+@app.command()
+def migrate(ctx: typer.Context, yamlargs_path: Path = Path("args.yml")):
     """Helper for database migration/creation.
 
     Useful for databases with limited migration capabilities e.g., sqlite.\n
     Supported operations:\n
-    - table rename -> use conf.yml:renames:oldtablename:oldtablename:newtablename\n
-    - column rename -> use conf.yml:renames:tablename:oldcolumnname:newcolumnname\n
+    - table rename -> use args.yml:renames:oldtablename:oldtablename:newtablename\n
+    - column rename -> use args.yml:renames:tablename:oldcolumnname:newcolumnname\n
     - table removal -> detected automatically by comparing db with this file\n
     - column removal -> detected automatically by comparing db with this file\n
     - table add -> handled by metadata.create_all\n
@@ -74,57 +118,22 @@ def migrate(yamlconf_file: Path = Path("conf.yml")):
     https://alembic.sqlalchemy.org/en/latest/autogenerate.html
     """
     # parse args
-    args = get_yamldict_key(yamlconf_file, "db")
+    args = get_yamldict_key(yamlargs_path, "db")
     renames = args.get("renames", {}) or {}
     dont_store = args.get("dont_store", True) or True
     args_dict = {"renames": renames, "dont_store": dont_store}
     print(f"Args: {args_dict}")
 
-    # determine db path
-    db_url = get_db_url()
-    if db_url.startswith("sqlite:///"):
-        sqlite_db_path = db_url.replace("sqlite:///", "", count=1)
-    else:
-        raise RuntimeError
+    # get engine
+    engine = ctx.obj
 
-    # create engine
-    engine = get_engine()
-
-    # SCENARIO 1: create new blank db
-    if not Path(sqlite_db_path).exists():
-        Base.metadata.create_all(engine)
-        print(f"Created database: {db_url}")
-        return
-
-    # get db tables
-    db_metadata = MetaData()
-    db_metadata.reflect(bind=engine)
-    db_md = get_tables_metadata(db_metadata)
-
-    # SCENARIO 2: recreate blank db (with the most recent schema)
-    if not db_md:
-        Base.metadata.drop_all(engine)
-        Base.metadata.create_all(engine)
-        print(f"Recreated empty database {db_url}")
-        return
-
-    # SCENARIO 3: recreate db using data from old db
-
-    # check diffs
-    sc_md = get_tables_metadata(Base.metadata)
-    diff = DeepDiff(
-        db_md, sc_md, ignore_order=True, exclude_paths=["root['alembic_version']"]
-    )
-    print("Diffs of existing db vs file schema:")
-    print(diff.pretty())
-    if not diff:
-        print("There are no diffs. Exiting.")
-        return
+    # calculate database metadata, source metadata, and their diffs
+    db_md, src_md, diffs = diff(ctx, echo=False)
 
     # determine removed tables/columns
     removed_tables = set()
     removed_columns: dict[str, Any] = {}
-    for item in diff["dictionary_item_removed"]:
+    for item in diffs["dictionary_item_removed"]:
         parts = re.findall(r"\[(.*?)\]", item)
         if len(parts) == 1:
             table = parts[0].replace("'", "")
@@ -165,7 +174,7 @@ def migrate(yamlconf_file: Path = Path("conf.yml")):
         if not isinstance(new_tname, str):
             print(f"New tablename should be a string, not {type(new_tname)}")
         # make sure table exists in the new schema
-        if new_tname not in sc_md:
+        if new_tname not in src_md:
             raise ValueError(f"Table '{tname}'{renamed_to}not in schema")
         # determine included columns (those that were not removed)
         included_cols = db_md[tname].keys() - removed_columns.get(tname, {})

@@ -32,33 +32,7 @@ def setup_db_url() -> None:
 
 
 @pytest.fixture(scope="session")
-def extension_modules() -> list[ModuleType | str]:
-    """Return a list of importable module paths whose model mappers should be registered
-    before creating the test database.
-
-    Override this fixture in test modules to include project extensions (e.g.
-    ['robinfood.mdl']).
-    """
-    return []
-
-
-@pytest.fixture(scope="session")
-def engine(setup_db_url, extension_modules: list[ModuleType | str]):
-    """Create a new database engine for the test session."""
-
-    # import project-specific model subclasses so their mappers are registered
-    if extension_modules:
-        import importlib
-
-        for ext in extension_modules:
-            if isinstance(ext, str):
-                ext = importlib.import_module(ext)
-            elif isinstance(ext, ModuleType):
-                pass  # module is already imported
-            else:
-                raise TypeError("Ignoring unsupported model_extension entry: %r", ext)
-            print(f"Using model-extension module '{ext.__name__}'")
-
+def engine(setup_db_url):
     kwargs = {"connect_args": {"check_same_thread": False}}
     engine = get_engine(**kwargs)
     print(f"Engine URL: {engine.url}")
