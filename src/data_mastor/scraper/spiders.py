@@ -251,6 +251,17 @@ class Baze(Spider):
         # return
         return spider
 
+    @classmethod
+    def main(cls) -> None:
+        # create process with cli and project settings
+        project_settings = get_project_settings()
+        for key, value in cls._settings.items():
+            project_settings.set(key, value, priority="cmdline")
+        process = CrawlerProcess(settings=project_settings)
+        # crawl with spiderargs
+        process.crawl(cls, **cls._spiderargs)
+        process.start()
+
     @staticmethod
     def _verbose_update(
         updated: dict, updater: dict, updater_name="", overwrite=True
@@ -367,14 +378,10 @@ class Baze(Spider):
         cls._cli_main()
 
     @classmethod
-    def used_args(cls):
-        return {**cls._settings, **cls._spiderargs}
-
-    @classmethod
     def _cli_main(cls) -> None:
         # print args
         print("Used args:")
-        print(cls.used_args())
+        print({**cls._settings, **cls._spiderargs})
         # validate args
         for key, value in cls._settings.items():
             # DO check settings types (using scrapy scrapy/utils/conf.py?)
@@ -392,15 +399,8 @@ class Baze(Spider):
         cls.main()
 
     @classmethod
-    def main(cls) -> None:
-        # create process with cli and project settings
-        project_settings = get_project_settings()
-        for key, value in cls._settings.items():
-            project_settings.set(key, value, priority="cmdline")
-        process = CrawlerProcess(settings=project_settings)
-        # crawl with spiderargs
-        process.crawl(cls, **cls._spiderargs)
-        process.start()
+    def _cli_cmdname(cls) -> str:
+        return cls.name.replace("_", "")
 
     @classmethod
     def cli_app(cls) -> typer.Typer:
@@ -423,15 +423,16 @@ class Baze(Spider):
         2) Using --arg/-a and --set/-s options similarly to 'scrapy crawl'\n
         3) Spider-specific arguments that offer help, validation, and default values\n.
         """
-        cmd_name = cls.name.replace("_", "")
-        app.command(name=cmd_name, help=helpstr)(func)
-        return app_with_yaml_support(app, keys=[cmd_name])
+        app.command(name=cls._cli_cmdname(), help=helpstr)(func)
+        return app
 
     @classmethod
     def run_cli(cls) -> None:
         """Permits convenienty runnning cls.main from spider subclass modules via
         Subclass.cli(); no the need to import typer and use typer.run(subclass.main)."""
-        cls.cli_app()
+        app = cls.cli_app()
+        app = app_with_yaml_support(app, keys=[cls._cli_cmdname()])
+        app()
 
     @classmethod
     def get_samples(cls):
@@ -589,13 +590,13 @@ class BazeSrc(Baze, metaclass=Meta):
         Baze._verbose_update(cls._spiderargs, dct, "specspargs")
 
 
+class ShopSrc(BazeSrc):
+    # custom_settings={} # DO test custom settings
+
+    @classmethod
+    def _cli(cls) -> None:
+        print("shopsrc cli")
+
+
 if __name__ == "__main__":
-
-    class ShopSrc(BazeSrc):
-        # custom_settings={} # DO test custom settings
-
-        @classmethod
-        def _cli(cls) -> None:
-            print("shopsrc cli")
-
     ShopSrc.run_cli()

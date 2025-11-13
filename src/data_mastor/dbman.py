@@ -14,7 +14,7 @@ from deepdiff.helper import COLORED_VIEW
 from pandas import DataFrame
 from rich import print as rprint
 from sqlalchemy import Engine, MetaData, create_engine
-from sqlalchemy.orm.decl_api import DCTransformDeclarative, DeclarativeBase
+from sqlalchemy.orm.decl_api import DeclarativeBase
 
 from data_mastor.cliutils import app_with_yaml_support, get_yamldict_key
 
@@ -295,8 +295,12 @@ def migrate(ctx: typer.Context, backup=True, write_db=False):
     _try_safely(_migrate, ctx)
 
 
+def cli_app():
+    return app_with_yaml_support(app, keys=["dbman"])
+
+
 def entrypoint():
-    app_with_yaml_support(app, keys=["dbman"])()
+    return cli_app()
 
 
 if __name__ == "__main__":

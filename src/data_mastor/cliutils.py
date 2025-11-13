@@ -109,8 +109,6 @@ def nested_yaml_dict_get(
             unknown_keys.append(marked_keys[0])
             yamlpart = yamlpart[unknown_keys[-1]]
         keys += unknown_keys
-    print(f"Yamlpart from {keys}:")
-    print(yamlpart)
     return [str(yamlpath)] + keys, yamlpart
 
 
@@ -149,8 +147,10 @@ def app_with_yaml_support(
 ) -> typer.Typer:
     yamlpath = Path(ARGS_FILENAME)
     all_keys, yamlargs = nested_yaml_dict_get(yamlpath, keys=keys)
+    print(f"Yamlargs from {all_keys}:")
+    print(yamlargs)
     if not isinstance(yamlargs, dict):
-        print(f"Warning: yamlargs ({yamlargs}) is not a dict. Using empty dict.")
+        print("WARNING: yamlargs is not a dict. Assuming an empty dict instead.")
         yamlargs = {}
     cmd_name = all_keys[-1].replace("!", "")
 
