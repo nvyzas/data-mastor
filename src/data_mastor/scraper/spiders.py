@@ -423,10 +423,10 @@ class Baze(Spider):
             fullsig_dict.update(sig.parameters)
         ctx_sig = {"ctx": inspect.signature(dummy_func_with_ctx).parameters["ctx"]}
         full_signature = inspect.Signature([*{**ctx_sig, **fullsig_dict}.values()])
-        cli_full.__signature__ = full_signature  # type: ignore
         annotations = {
             name: param.annotation for name, param in full_signature.parameters.items()
         }
+        cli_full.__signature__ = full_signature  # type: ignore
         cli_full.__annotations__ = annotations
         app.command(help=helpstr)(cli_full)
         return app

@@ -28,7 +28,7 @@ def _import_extension_module():
     """Import project-specific model subclasses so their mappers are registered."""
     extension_module: str | None = os.environ.get("DB_MODULE", None)
     if extension_module is not None:
-        print(f"Using extension module: {extension_module}")
+        print(f"Importing extension module: {extension_module}")
         importlib.import_module(extension_module)
 
 
@@ -41,6 +41,7 @@ def get_engine(**kwargs) -> Engine:
     global _engine
     if _engine is None:
         _engine = create_engine(_get_db_url(), **kwargs)
+        print(f"Using engine: {_engine.url}")
     return _engine
 
 

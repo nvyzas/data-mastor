@@ -1,10 +1,33 @@
+import inspect
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import typer
 import yaml
 from click.core import ParameterSource
 from rich import print
+
+
+def edit_signature(func, from_functions: list[Callable]):
+    # create a wrapper function so that we can give it a __signature__
+    # (not possible to set __signature__ on a classmethod)
+    def _func(**kwargs):
+        func(**kwargs)
+
+    def dummy_func_with_ctx(ctx: typer.Context):
+        pass
+
+    fullsig_dict: dict[str, Any] = {}
+    for f in from_functions:
+        sig = inspect.signature(cast(Callable[..., Any], f))
+        fullsig_dict.update(sig.parameters)
+    ctx_sig = {"ctx": inspect.signature(dummy_func_with_ctx).parameters["ctx"]}
+    full_sig = inspect.Signature([*{**ctx_sig, **fullsig_dict}.values()])
+    annots = {name: param.annotation for name, param in full_sig.parameters.items()}
+    _func.__signature__ = full_sig  # type: ignore
+    _func.__annotations__ = annots
+    return _func
 
 
 # DO replace all uses of this with yaml_get
@@ -147,9 +170,12 @@ def run_yamlcmd(app: typer.Typer, keys: list[str] | str | None = None) -> None:
     app.registered_commands = [cmd]
 
     # add callback to parse the yaml args, incorporating the existing callback (if any)
-    func = None
-    if app.registered_callback is not None:
-        func = app.registered_callback.callback
+
+    ex_callback = (
+        app.registered_callback.callback
+        if app.registered_callback is not None
+        else None
+    )
 
     def parsing_callback(ctx: typer.Context):
         print("Running parsing_callback")
@@ -157,11 +183,18 @@ def run_yamlcmd(app: typer.Typer, keys: list[str] | str | None = None) -> None:
         ctx.obj["updated_yamlargs"] = yamlargs_with_params(
             yamlargs, ctx, edit_ctx_values=True
         )
-        if func is not None:
-            print(f"Running ex-callback: {func.__name__}")
-            func(ctx)
 
-    app.callback()(parsing_callback)
+    if ex_callback is not None:
+
+        def combined_callback(ctx: typer.Context, **kwargs):
+            parsing_callback(ctx)
+            print("Running ex-callback")
+            kw = {k: v for k, v in kwargs.items() if k in ex_callback.__annotations__}
+            ex_callback(ctx, **kw)
+
+        app.callback()(edit_signature(combined_callback, [ex_callback]))
+    else:
+        app.callback()(parsing_callback)
     print(f"Running command {cmd_name}")
 
     # run app
