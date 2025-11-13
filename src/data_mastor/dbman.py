@@ -14,7 +14,7 @@ from pandas import DataFrame
 from rich import print as rprint
 from sqlalchemy import Engine, MetaData, create_engine
 
-from data_mastor.cliutils import get_yamldict_key, run_yamlcmd
+from data_mastor.cliutils import app_with_yaml_support, get_yamldict_key
 from data_mastor.scraper.models import Base
 
 # typer app
@@ -33,7 +33,11 @@ def _import_extension_module():
 
 
 def _get_db_url() -> str:
-    return os.environ["DB_URL"]
+    db_url = os.environ.get("DB_URL")
+    if db_url is None:
+        db_url = "sqlite:///:memory:"
+        print("WARNING: DB_URL env var is not set. Using in-memory database")
+    return db_url
 
 
 def get_engine(**kwargs) -> Engine:
@@ -110,7 +114,7 @@ def callback(ctx: typer.Context):
     ctx.obj["engine"] = get_engine()
 
     # get db filepath
-    db_url = _get_db_url()
+    db_url = str(ctx.obj["engine"].url)
     if not db_url.startswith("sqlite:///"):
         raise RuntimeError(f"Invalid db url: {db_url}")
     db_filepath = Path(db_url.replace("sqlite:///", "", count=1))
@@ -278,7 +282,7 @@ def migrate(ctx: typer.Context, backup=True, write_db=False):
 
 
 def entrypoint():
-    run_yamlcmd(app, keys=["dbman"])
+    app_with_yaml_support(app, keys=["dbman"])()
 
 
 if __name__ == "__main__":

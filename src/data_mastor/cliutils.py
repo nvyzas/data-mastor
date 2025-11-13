@@ -10,11 +10,6 @@ from rich import print
 
 
 def edit_signature(func, from_functions: list[Callable]):
-    # create a wrapper function so that we can give it a __signature__
-    # (not possible to set __signature__ on a classmethod)
-    def _func(**kwargs):
-        func(**kwargs)
-
     def dummy_func_with_ctx(ctx: typer.Context):
         pass
 
@@ -25,12 +20,12 @@ def edit_signature(func, from_functions: list[Callable]):
     ctx_sig = {"ctx": inspect.signature(dummy_func_with_ctx).parameters["ctx"]}
     full_sig = inspect.Signature([*{**ctx_sig, **fullsig_dict}.values()])
     annots = {name: param.annotation for name, param in full_sig.parameters.items()}
-    _func.__signature__ = full_sig  # type: ignore
-    _func.__annotations__ = annots
-    return _func
+    func.__signature__ = full_sig  # type: ignore
+    func.__annotations__ = annots
+    return func
 
 
-# DO replace all uses of this with yaml_get
+# DO replace all uses of this with nested_yaml_dict_get
 def get_yamldict_key(
     yamlfile: str | Path, key: str, doraise: bool = False, default: Any = None
 ):
@@ -119,7 +114,7 @@ def nested_yaml_dict_get(
     return [str(yamlpath)] + keys, yamlpart
 
 
-def yamlargs_with_params(
+def yamlargs_from_params(
     yamlargs: dict[str, Any], ctx: typer.Context, edit_ctx_values=True
 ) -> dict[str, Any]:
     updated_yamlargs = {}
@@ -149,7 +144,9 @@ def yamlargs_with_params(
 ARGS_FILENAME = "args.yml"
 
 
-def run_yamlcmd(app: typer.Typer, keys: list[str] | str | None = None) -> None:
+def app_with_yaml_support(
+    app: typer.Typer, keys: list[str] | str | None = None
+) -> typer.Typer:
     yamlpath = Path(ARGS_FILENAME)
     all_keys, yamlargs = nested_yaml_dict_get(yamlpath, keys=keys)
     if not isinstance(yamlargs, dict):
@@ -162,12 +159,13 @@ def run_yamlcmd(app: typer.Typer, keys: list[str] | str | None = None) -> None:
     for reg_cmd in app.registered_commands:
         if reg_cmd.callback is None:
             raise RuntimeError(f"Encountered NULL callback: {reg_cmd.callback}")
-        if reg_cmd.callback.__name__ == cmd_name:
+        if reg_cmd.name == cmd_name or reg_cmd.callback.__name__ == cmd_name:
             cmd = reg_cmd
             break
     else:
-        raise RuntimeError(f"Typer app has no registed command named: {cmd}")
+        raise RuntimeError(f"Typer app has no registed command named: {cmd_name}")
     app.registered_commands = [cmd]
+    print(f"Command name: {cmd.name or reg_cmd.callback.__name__}")
 
     # add callback to parse the yaml args, incorporating the existing callback (if any)
 
@@ -180,9 +178,7 @@ def run_yamlcmd(app: typer.Typer, keys: list[str] | str | None = None) -> None:
     def parsing_callback(ctx: typer.Context):
         print("Running parsing_callback")
         ctx.obj = {}
-        ctx.obj["updated_yamlargs"] = yamlargs_with_params(
-            yamlargs, ctx, edit_ctx_values=True
-        )
+        ctx.obj["yamlargs"] = yamlargs_from_params(yamlargs, ctx, edit_ctx_values=False)
 
     if ex_callback is not None:
 
@@ -195,10 +191,7 @@ def run_yamlcmd(app: typer.Typer, keys: list[str] | str | None = None) -> None:
         app.callback()(edit_signature(combined_callback, [ex_callback]))
     else:
         app.callback()(parsing_callback)
-    print(f"Running command {cmd_name}")
-
-    # run app
-    app()
+    return app
 
 
 Opt = typer.Option

@@ -172,6 +172,8 @@ mlrun*/
 *.ipynb
 
 # project
+info.yml
+args.yml
 out/
 tests/out/
 

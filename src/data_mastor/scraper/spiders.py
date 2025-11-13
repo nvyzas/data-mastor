@@ -13,7 +13,13 @@ from scrapy.crawler import CrawlerProcess
 from scrapy.settings import SETTINGS_PRIORITIES, Settings
 from scrapy.utils.project import get_project_settings
 
-from data_mastor.cliutils import Opt, nested_yaml_dict_get, yamlargs_with_params
+from data_mastor.cliutils import (
+    Opt,
+    app_with_yaml_support,
+    edit_signature,
+    nested_yaml_dict_get,
+    yamlargs_from_params,
+)
 from data_mastor.scraper.middlewares import PrivacyCheckerDlMw, ResponseSaverSpMw
 from data_mastor.scraper.pipelines import TIMESTAMP_FMT, ListingStorer, SourceStorer
 from data_mastor.scraper.utils import (
@@ -307,12 +313,13 @@ class Baze(Spider):
 
     @classmethod
     def _cli_full(cls, ctx: typer.Context, **kwargs) -> None:
+        print("Running _cli_full")
         # make sure args are reset (helps in testing)
         cls._spiderargs = {}
         cls._settings = {}
 
         # apply yamlargs
-        yamlargs = yamlargs_with_params(ctx, key=cls.name, edit_ctx_values=False)
+        yamlargs = ctx.obj["yamlargs"]
         Baze._verbose_update(kwargs, yamlargs, "yamlargs")
 
         for cm in [cls._cli_basic, cls._cli_sub, cls._cli]:
@@ -324,7 +331,7 @@ class Baze(Spider):
                 print(kw)
                 cast(Callable[..., Any], cm)(**kw)
             except NotImplementedError:
-                print("WARNING: not implemented")
+                print(f"WARNING: '{cm.__name__}' is not implemented")
                 pass
             [kwargs.pop(k) for k in kw if k != "ctx"]
         kwargs.pop("ctx", None)
@@ -340,7 +347,7 @@ class Baze(Spider):
 
         # unused args
         if kwargs:
-            print(f"WARNING: Unused args remain: {kwargs}")
+            print(f"WARNING: There are remaining (unused) args: {kwargs}")
             kwargs = {}
 
         # delete default, non-explicit settings (to be reapplied in from_crawler)
@@ -399,44 +406,32 @@ class Baze(Spider):
     def cli_app(cls) -> typer.Typer:
         """Permits conveniently running typer.testing.CliRunner().invoke in spider test
         modules by providing its first argument, the typer app object."""
-        app = typer.Typer()
-        # define docstr here rather than in func doc to protect it from docformatter
-        helpstr = f"""
-        CLI interface to {cls.__name__}.main (buffed version of 'scrapy crawl' CLI)\n
-        Supports the following:\n
-        1) Reading args/settings from a yaml (config) file\n
-        2) Using --arg/-a and --set/-s options similarly to 'scrapy crawl'\n
-        3) Spider-specific arguments that offer help, validation, and default values\n.
-        """
+        app = typer.Typer(invoke_without_command=True)
 
         # create a wrapper function so that we can give it a __signature__
         # (not possible to set __signature__ on a classmethod)
-        def cli_full(**kwargs):
+        def func(**kwargs):
             cls._cli_full(**kwargs)
 
-        def dummy_func_with_ctx(ctx: typer.Context):
-            pass
-
-        fullsig_dict: dict[str, Any] = {}
-        for cm in [cls._cli_basic, cls._cli_sub, cls._cli]:
-            sig = inspect.signature(cast(Callable[..., Any], cm))
-            fullsig_dict.update(sig.parameters)
-        ctx_sig = {"ctx": inspect.signature(dummy_func_with_ctx).parameters["ctx"]}
-        full_signature = inspect.Signature([*{**ctx_sig, **fullsig_dict}.values()])
-        annotations = {
-            name: param.annotation for name, param in full_signature.parameters.items()
-        }
-        cli_full.__signature__ = full_signature  # type: ignore
-        cli_full.__annotations__ = annotations
-        app.command(help=helpstr)(cli_full)
-        return app
+        edit_signature(func, [cls._cli_basic, cls._cli_sub, cls._cli])
+        # define helpstring here rather than as func docstring
+        # to protect it from docformatter
+        helpstr = f"""
+        CLI interface to {cls.__name__}.main (buffed version of 'scrapy crawl' CLI)\n
+        Supports the following:\n
+        1) Reading args (spiderargs or settings) from a yaml (config) file\n
+        2) Using --arg/-a and --set/-s options similarly to 'scrapy crawl'\n
+        3) Spider-specific arguments that offer help, validation, and default values\n.
+        """
+        cmd_name = cls.name.replace("_", "")
+        app.command(name=cmd_name, help=helpstr)(func)
+        return app_with_yaml_support(app, keys=[cmd_name])
 
     @classmethod
     def run_cli(cls) -> None:
         """Permits convenienty runnning cls.main from spider subclass modules via
         Subclass.cli(); no the need to import typer and use typer.run(subclass.main)."""
-        app = cls.cli_app()
-        app()
+        cls.cli_app()
 
     @classmethod
     def get_samples(cls):
@@ -450,7 +445,7 @@ class Baze(Spider):
 class Meta(type):
     """Metaclass enforcing assumptions for the subclasses of Baze's subclasses."""
 
-    def __new__(cls, name, bases, dct):
+    def __new__(cls, name: str, bases, dct):
         c = super().__new__(cls, name, bases, dct)
         if not c.__base__:
             raise RuntimeError(f"No baseclass for {c}")
@@ -490,7 +485,7 @@ class Meta(type):
         if not info_file:
             return c
         codename = name[:-3].lower()
-        info = nested_yaml_dict_get(info_file, [codename], doraise=False)
+        _, info = nested_yaml_dict_get(info_file, [codename], doraise=False)
         spider_info = info.get(spidertype.lower(), {})
         # set custom classvars: shop name, html_fields
         setattr(c, "shop", info.get("name", codename))
