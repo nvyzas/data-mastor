@@ -13,7 +13,7 @@ from scrapy.crawler import CrawlerProcess
 from scrapy.settings import SETTINGS_PRIORITIES, Settings
 from scrapy.utils.project import get_project_settings
 
-from data_mastor.cliutils import Opt, parse_yamlargs, yamldict_get
+from data_mastor.cliutils import Opt, nested_yaml_dict_get, yamlargs_with_params
 from data_mastor.scraper.middlewares import PrivacyCheckerDlMw, ResponseSaverSpMw
 from data_mastor.scraper.pipelines import TIMESTAMP_FMT, ListingStorer, SourceStorer
 from data_mastor.scraper.utils import (
@@ -312,7 +312,7 @@ class Baze(Spider):
         cls._settings = {}
 
         # apply yamlargs
-        yamlargs = parse_yamlargs(ctx, key=cls.name, edit_ctx_values=False)
+        yamlargs = yamlargs_with_params(ctx, key=cls.name, edit_ctx_values=False)
         Baze._verbose_update(kwargs, yamlargs, "yamlargs")
 
         for cm in [cls._cli_basic, cls._cli_sub, cls._cli]:
@@ -490,7 +490,7 @@ class Meta(type):
         if not info_file:
             return c
         codename = name[:-3].lower()
-        info = yamldict_get(info_file, [codename], doraise=False)
+        info = nested_yaml_dict_get(info_file, [codename], doraise=False)
         spider_info = info.get(spidertype.lower(), {})
         # set custom classvars: shop name, html_fields
         setattr(c, "shop", info.get("name", codename))

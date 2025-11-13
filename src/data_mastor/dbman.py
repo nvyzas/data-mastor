@@ -18,7 +18,7 @@ from data_mastor.cliutils import get_yamldict_key, run_yamlcmd
 from data_mastor.scraper.models import Base
 
 # typer app
-app = typer.Typer(invoke_without_command=True)
+app = typer.Typer(invoke_without_command=True, add_completion=False)
 
 # engine
 _engine: None | Engine = None
@@ -28,14 +28,15 @@ def _import_extension_module():
     """Import project-specific model subclasses so their mappers are registered."""
     extension_module: str | None = os.environ.get("DB_MODULE", None)
     if extension_module is not None:
+        print(f"Using extension module: {extension_module}")
         importlib.import_module(extension_module)
 
 
-def _get_db_url():
+def _get_db_url() -> str:
     return os.environ["DB_URL"]
 
 
-def get_engine(**kwargs):
+def get_engine(**kwargs) -> Engine:
     _import_extension_module()
     global _engine
     if _engine is None:
@@ -102,7 +103,7 @@ def _try_safely(func, ctx: typer.Context) -> None:
 @app.callback()
 def callback(ctx: typer.Context):
     # init ctx obj to be shared
-    ctx.obj = {}
+    ctx.obj = ctx.obj or {}
 
     # get engine
     ctx.obj["engine"] = get_engine()
@@ -275,5 +276,9 @@ def migrate(ctx: typer.Context, backup=True, write_db=False):
     _try_safely(_migrate, ctx)
 
 
+def entrypoint():
+    run_yamlcmd(app, keys=["dbman"])
+
+
 if __name__ == "__main__":
-    run_yamlcmd(app, key=["dbman"])
+    entrypoint()

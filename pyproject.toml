@@ -34,7 +34,7 @@ requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project.scripts]
-dm = "data_mastor.dbman:app"
+dm = "data_mastor.dbman:entrypoint"
 
 # TOOLS
 
