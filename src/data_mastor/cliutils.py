@@ -188,9 +188,10 @@ def app_with_yaml_support(
             kw = {k: v for k, v in kwargs.items() if k in ex_callback.__annotations__}
             ex_callback(ctx, **kw)
 
-        app.callback()(edit_signature(combined_callback, [ex_callback]))
+        # app.callback()(edit_signature(combined_callback, [ex_callback]))
     else:
-        app.callback()(parsing_callback)
+        # app.callback()(parsing_callback)
+        pass
     return app
 
 

@@ -4,6 +4,7 @@ import re
 import shutil
 from datetime import datetime
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import pandas as pd
@@ -13,9 +14,9 @@ from deepdiff.helper import COLORED_VIEW
 from pandas import DataFrame
 from rich import print as rprint
 from sqlalchemy import Engine, MetaData, create_engine
+from sqlalchemy.orm.decl_api import DCTransformDeclarative, DeclarativeBase
 
 from data_mastor.cliutils import app_with_yaml_support, get_yamldict_key
-from data_mastor.scraper.models import Base
 
 # typer app
 app = typer.Typer(invoke_without_command=True, add_completion=False)
@@ -24,12 +25,24 @@ app = typer.Typer(invoke_without_command=True, add_completion=False)
 _engine: None | Engine = None
 
 
-def _import_extension_module():
-    """Import project-specific model subclasses so their mappers are registered."""
+def _import_extension_module() -> ModuleType | None:
+    """Import project-specific model subclasses so that their mappers are registered."""
     extension_module: str | None = os.environ.get("DB_MODULE", None)
     if extension_module is not None:
         print(f"Importing extension module: {extension_module}")
-        importlib.import_module(extension_module)
+        return importlib.import_module(extension_module)
+
+
+def _get_declarative_base_class() -> type[DeclarativeBase]:
+    module = _import_extension_module()
+    keys = ["Base"] + [_ for _ in dir(module) if not _.startswith("__")]
+    for k in keys:
+        attr = getattr(module, k)
+        if not hasattr(attr, "metadata"):
+            continue
+        if isinstance(attr, type) and issubclass(attr, DeclarativeBase):
+            return attr
+    raise RuntimeError(f"There is no declarative base class for the model in {module}")
 
 
 def _get_db_url() -> str:
@@ -105,20 +118,20 @@ def _try_safely(func, ctx: typer.Context) -> None:
             _restore_backup(backup_filepath, db_filepath, ".dryrun")
 
 
-@app.callback()
-def callback(ctx: typer.Context):
-    # init ctx obj to be shared
-    ctx.obj = ctx.obj or {}
+# @app.callback()
+# def callback(ctx: typer.Context):
+#     # init ctx obj to be shared
+#     ctx.obj = ctx.obj or {}
 
-    # get engine
-    ctx.obj["engine"] = get_engine()
+#     # get engine
+#     ctx.obj["engine"] = get_engine()
 
-    # get db filepath
-    db_url = str(ctx.obj["engine"].url)
-    if not db_url.startswith("sqlite:///"):
-        raise RuntimeError(f"Invalid db url: {db_url}")
-    db_filepath = Path(db_url.replace("sqlite:///", "", count=1))
-    ctx.obj["db_filepath"] = db_filepath
+#     # get db filepath
+#     db_url = str(ctx.obj["engine"].url)
+#     if not db_url.startswith("sqlite:///"):
+#         raise RuntimeError(f"Invalid db url: {db_url}")
+#     db_filepath = Path(db_url.replace("sqlite:///", "", count=1))
+#     ctx.obj["db_filepath"] = db_filepath
 
 
 @app.command()
@@ -146,7 +159,8 @@ def dbmd(ctx: typer.Context, echo=True):
 
 @app.command()
 def srcmd(echo=True):
-    src_metadata = _tables_dict(Base.metadata)
+    basecls = _get_declarative_base_class()
+    src_metadata = _tables_dict(basecls.metadata)
     if echo:
         rprint(src_metadata)
     return src_metadata
