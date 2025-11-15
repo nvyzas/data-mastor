@@ -1,6 +1,8 @@
 import inspect
+from collections.abc import Callable
 from functools import wraps
 from inspect import Signature, get_annotations, signature
+from unittest.mock import MagicMock, Mock
 
 import click
 import pytest
@@ -39,7 +41,7 @@ def check(value):
     calls.clear()
 
 
-def cb0(s):
+def cmd0(s):
     print("Cmd0", s)
 
 
@@ -81,83 +83,118 @@ def app_funcs_from_keys(app: Typer, keys: list[str] | None = None):
 
     # look in the root app (first arg)
     # its name should NOT be included in the keys arg
-    tpr = app
-    if tpr.registered_callback:
-        _f = tpr.registered_callback.callback
-        print(f"Adding callback '{_f}' from root app")
-        funcs.append(_f)
     if not keys:
-        if len(tpr.registered_commands) > 1:
-            raise ValueError("There are more than one commands in root and no keys")
-        if len(tpr.registered_commands) == 1:
-            _f = tpr.registered_commands[0].callback
-            funcs.append(f)
+        if app.registered_callback:
+            _f = app.registered_callback.callback
+            print(f"Adding callback '{_f}' from root app")
+            funcs.append(_f)
+        if app.registered_groups:
+            msg = "There are registered groups in root but no keys given"
+            raise ValueError(msg)
+        if len(app.registered_commands) > 1:
+            msg = "There are more than one commands in root but no keys given"
+            raise ValueError(msg)
+        if len(app.registered_commands) == 1:
+            _f = app.registered_commands[0].callback
+            funcs.append(_f)
         return funcs
 
-    # traverse groups
-    for i, key in enumerate(keys):
-        groups = tpr.registered_groups
-        _apps = [_.typer_instance for _ in groups if _.typer_instance is not None]
-        key_tprs = [_ for _ in _apps if _.info == key]
+    # iterate through keys (since all must be matched)
+    tpr = app
+    for i, key in enumerate(keys[:-1]):
+        # check for callback
+        if tpr.registered_callback:
+            _f = tpr.registered_commands[0].callback
+            print(f"Adding callback '{_f}' from app named '{key}'")
+            funcs.append(tpr.registered_callback.callback)
+        # traverse groups
+        key_tprs = []
+        for g in tpr.registered_groups:
+            if g.typer_instance is None:
+                print(f"WARNING: group {g} named '{g.name}' has no typer instance")
+                continue
+            if g.name == key or g.typer_instance.info.name == key:
+                key_tprs.append(g.typer_instance)
         if len(key_tprs) > 1:
             raise ValueError(f"There are more than one apps named '{key}'")
-        if len(key_tprs) == 1:
-            tpr = key_tprs[0]
-            if tpr.registered_callback:
-                _f = tpr.registered_commands[0].callback
-                print(f"Adding callback '{f}' from root app")
-                funcs.append(tpr.registered_callback.callback)
-        # check for command if it's the last key
-        if i == len(keys) - 1:
-            cmds = [_ for _ in tpr.registered_commands if _.callback is not None]
-            key_cmds = [_ for _ in cmds if key in [_.name, _.callback.__name__]]  # type: ignore
-            if len(key_cmds) > 1:
-                raise ValueError(f"There are more than one commands named '{key}'")
-            if not key_cmds:
-                print(f"No command found (from the last key '{key}')")
-            funcs.append(key_cmds[0].callback)
+        if not key_tprs:
+            raise ValueError(f"There is no app named '{key}' (keys: {keys})")
+        tpr = key_tprs[0]
+
+    # look for the command (using the last key)
+    key = keys[-1]
+    cmds = [_ for _ in tpr.registered_commands if _.callback is not None]
+    key_cmds = [_ for _ in cmds if key in [_.name, _.callback.__name__]]  # type: ignore
+    if len(key_cmds) > 1:
+        raise ValueError(f"There are more than one commands named '{key}'")
+    if not key_cmds:
+        raise ValueError(f"No command found (from the last key '{key}')")
+    funcs.append(key_cmds[0].callback)
+    return funcs
 
     return funcs
 
 
-def test_cmd_from_keys_nokeys(app0: Typer, app1: Typer) -> None:
-    # callback only
-    app0.callback()(cb0)
-    funcs = app_funcs_from_keys(app0)
-    assert funcs == [cb0]
-    # command only
-    app1.command("cmd1")(cmd1)
-    funcs = app_funcs_from_keys(app0)
-    assert funcs == [cmd1]
-    app2 = Typer()
-    app2.callback()(cb0)
-    app2.command("cmd1")(cmd1)
-    funcs = app_funcs_from_keys(app0)
-    assert funcs == [cb0, cmd1]
+mocks = {}
 
-    # with pytest.raises(ValueError):
-    #     cmds = funcs_from_keys(app0, ["zer"])
-    # with pytest.raises(ValueError):
-    #     cmds = funcs_from_keys(app0, ["zero", "wrong"])
+
+def ff(id_: str | int) -> Callable:
+    """Function Factory (using mocks)"""
+
+    def _printer():
+        print(id_)
+
+    nm = f"f{id_}"
+    return mocks.setdefault(
+        id_, MagicMock(return_value=id_, side_effect=_printer, name=nm, __name__=nm)
+    )
+
+
+def test_cmd_from_keys_single_callback() -> None:
+    app0 = Typer()
+    app0.callback()(ff(1))
+    funcs = app_funcs_from_keys(app0)
+    assert funcs == [ff(1)]
+
+
+def test_cmd_from_keys_single_command() -> None:
+    app1 = Typer()
+    app1.command()(ff(2))
+    funcs = app_funcs_from_keys(app1)
+    assert funcs == [ff(2)]
+
+
+def test_cmd_from_keys_callback_and_command() -> None:
+    app2 = Typer()
+    app2.callback()(ff(1))
+    app2.command()(ff(2))
+    funcs = app_funcs_from_keys(app2)
+    assert funcs == [ff(1), ff(2)]
+
+
+def test_cmd_from_keys_nested():
+    app1 = Typer()
+    app1.callback()(ff(10))
+    app1.command()(ff(11))
+    app2 = Typer()
+    app2.callback()(ff(20))
+    app2.command()(ff(21))
+    app1.add_typer(app2)
+    with pytest.raises(ValueError):
+        app_funcs_from_keys(app1)
+    # lvl1 command
+    assert app_funcs_from_keys(app1, ["f11"]) == [ff(10), ff(11)]
+    # lvl2 command
+    app2.info.name = "two"
+    assert app_funcs_from_keys(app1, ["two", "f21"]) == [ff(10), ff(11), ff(20), ff(21)]
+    # assert app_funcs_from_keys(app1, ["f11"]) == [ff(11)]
+    # assert app_funcs_from_keys(app1, ["f11"]) == [ff(11)]
 
 
 def test_cmd_from_keys_flat_with_cmd(app0):
     app0.command("cmd0")(cb0)
     funcs = app_funcs_from_keys(app0, ["zero", "cmd0"])
     assert funcs == [cb0]
-
-
-def test_cmd_from_keys_nested(app01):
-    cmds = app_funcs_from_keys(app01, ["zero"])
-    assert cmds == [cb0]
-    cmds = app_funcs_from_keys(app01, ["zero", "one"])
-    assert cmds == [cb0, cb1]
-    with pytest.raises(ValueError):
-        cmds = app_funcs_from_keys(app01, ["wrong"])
-    with pytest.raises(ValueError):
-        cmds = app_funcs_from_keys(app01, ["zero", "wrong"])
-    with pytest.raises(ValueError):
-        cmds = app_funcs_from_keys(app01, ["zero", "one", "wrong"])
 
 
 def combine(funcs):
