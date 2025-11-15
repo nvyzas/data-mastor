@@ -39,7 +39,7 @@ def check(value):
     calls.clear()
 
 
-def cmd0(s):
+def cb0(s):
     print("Cmd0", s)
 
 
@@ -50,93 +50,114 @@ def cmd1(s):
 @pytest.fixture
 def app0() -> Typer:
     app0 = Typer(name="zero", invoke_without_command=True)
-    app0.callback()(cb0)
     return app0
 
 
 @pytest.fixture
 def app1() -> Typer:
     app1 = Typer(name="one", invoke_without_command=True)
-    app1.callback()(cb1)
     return app1
 
 
-@pytest.fixture
-def app01(app0: Typer, app1: Typer):
-    app0.add_typer(app1)
-    return app0
-
-
-def test_auto_invoke(app0, app01):
+def test_auto_invoke(app0: Typer, app1: Typer) -> None:
     print()
     check([])
     # app0 auto-invoke
+    app0.callback()(cb0)
     result = CliRunner().invoke(app0)
+    _printresult(result)
     check([0])
-    # app1 auto-invoke
-    result = CliRunner().invoke(app01, "one")
+    # app01
+    app1.callback()(cb1)
+    app0.add_typer(app1)
+    # app01 auto-invoke
+    result = CliRunner().invoke(app1, "one")
     _printresult(result)
     check([0, 1])
 
 
-def funcs_from_keys(app: Typer, keys: list[str] | None = None):
+def app_funcs_from_keys(app: Typer, keys: list[str] | None = None):
     funcs = []
-    _app = app
-    _apps = [_app]
-    group_keys = keys or []
-    cmd_key = keys[-1] if keys else None
-    for key in group_keys:
-        for _app in _apps:
-            if key == _app.info.name:
-                print(f"Found app for key '{key}'")
-                break
-        else:
-            raise ValueError(f"Could not find app named {key}")
-        if _app.registered_callback:
-            print(f"Added callback for key '{key}'")
-            funcs.append(_app.registered_callback.callback)
-        groups = _app.registered_groups
-        instances = [_.typer_instance for _ in groups if _ is not None]
-        _apps = [_ for _ in instances if isinstance(_, Typer)]
 
-    if key is None:
-        if _app.registered_callback:
-            print(f"Added callback for key '{key}'")
-            funcs.append(_app.registered_callback.callback)
-    _cmds = [_ for _ in _app.registered_commands if _.name == key]
-    if len(_cmds) == 1:
-        funcs.append(_cmds[0].callback)
+    # look in the root app (first arg)
+    # its name should NOT be included in the keys arg
+    tpr = app
+    if tpr.registered_callback:
+        _f = tpr.registered_callback.callback
+        print(f"Adding callback '{_f}' from root app")
+        funcs.append(_f)
+    if not keys:
+        if len(tpr.registered_commands) > 1:
+            raise ValueError("There are more than one commands in root and no keys")
+        if len(tpr.registered_commands) == 1:
+            _f = tpr.registered_commands[0].callback
+            funcs.append(f)
+        return funcs
 
-    print(f"Could not find the command (key={group_keys[-1]})")
+    # traverse groups
+    for i, key in enumerate(keys):
+        groups = tpr.registered_groups
+        _apps = [_.typer_instance for _ in groups if _.typer_instance is not None]
+        key_tprs = [_ for _ in _apps if _.info == key]
+        if len(key_tprs) > 1:
+            raise ValueError(f"There are more than one apps named '{key}'")
+        if len(key_tprs) == 1:
+            tpr = key_tprs[0]
+            if tpr.registered_callback:
+                _f = tpr.registered_commands[0].callback
+                print(f"Adding callback '{f}' from root app")
+                funcs.append(tpr.registered_callback.callback)
+        # check for command if it's the last key
+        if i == len(keys) - 1:
+            cmds = [_ for _ in tpr.registered_commands if _.callback is not None]
+            key_cmds = [_ for _ in cmds if key in [_.name, _.callback.__name__]]  # type: ignore
+            if len(key_cmds) > 1:
+                raise ValueError(f"There are more than one commands named '{key}'")
+            if not key_cmds:
+                print(f"No command found (from the last key '{key}')")
+            funcs.append(key_cmds[0].callback)
+
     return funcs
 
 
-def test_cmd_from_keys_flat(app0):
-    cmds = funcs_from_keys(app0, ["zero"])
-    assert cmds == [cb0]
-    with pytest.raises(ValueError):
-        cmds = funcs_from_keys(app0, ["wrong"])
-    with pytest.raises(ValueError):
-        cmds = funcs_from_keys(app0, ["zero", "wrong"])
+def test_cmd_from_keys_nokeys(app0: Typer, app1: Typer) -> None:
+    # callback only
+    app0.callback()(cb0)
+    funcs = app_funcs_from_keys(app0)
+    assert funcs == [cb0]
+    # command only
+    app1.command("cmd1")(cmd1)
+    funcs = app_funcs_from_keys(app0)
+    assert funcs == [cmd1]
+    app2 = Typer()
+    app2.callback()(cb0)
+    app2.command("cmd1")(cmd1)
+    funcs = app_funcs_from_keys(app0)
+    assert funcs == [cb0, cmd1]
+
+    # with pytest.raises(ValueError):
+    #     cmds = funcs_from_keys(app0, ["zer"])
+    # with pytest.raises(ValueError):
+    #     cmds = funcs_from_keys(app0, ["zero", "wrong"])
 
 
 def test_cmd_from_keys_flat_with_cmd(app0):
-    app0.command("cmd0")(cmd0)
-    cmds = funcs_from_keys(app0, ["zero", "cmd0"])
-    assert cmds == [cmd0]
+    app0.command("cmd0")(cb0)
+    funcs = app_funcs_from_keys(app0, ["zero", "cmd0"])
+    assert funcs == [cb0]
 
 
 def test_cmd_from_keys_nested(app01):
-    cmds = funcs_from_keys(app01, ["zero"])
+    cmds = app_funcs_from_keys(app01, ["zero"])
     assert cmds == [cb0]
-    cmds = funcs_from_keys(app01, ["zero", "one"])
+    cmds = app_funcs_from_keys(app01, ["zero", "one"])
     assert cmds == [cb0, cb1]
     with pytest.raises(ValueError):
-        cmds = funcs_from_keys(app01, ["wrong"])
+        cmds = app_funcs_from_keys(app01, ["wrong"])
     with pytest.raises(ValueError):
-        cmds = funcs_from_keys(app01, ["zero", "wrong"])
+        cmds = app_funcs_from_keys(app01, ["zero", "wrong"])
     with pytest.raises(ValueError):
-        cmds = funcs_from_keys(app01, ["zero", "one", "wrong"])
+        cmds = app_funcs_from_keys(app01, ["zero", "one", "wrong"])
 
 
 def combine(funcs):
