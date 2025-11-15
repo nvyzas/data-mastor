@@ -79,48 +79,64 @@ def test_auto_invoke(app0, app01):
     check([0, 1])
 
 
-def cmds_from_keys(app: Typer, keys: list[str]):
-    cmds = []
-    candidates = [app]
-    for key in keys:
-        for cand in candidates:
-            if key == cand.info.name:
+def funcs_from_keys(app: Typer, keys: list[str] | None = None):
+    funcs = []
+    _app = app
+    _apps = [_app]
+    group_keys = keys or []
+    cmd_key = keys[-1] if keys else None
+    for key in group_keys:
+        for _app in _apps:
+            if key == _app.info.name:
                 print(f"Found app for key '{key}'")
                 break
         else:
             raise ValueError(f"Could not find app named {key}")
-        if cand.registered_callback:
+        if _app.registered_callback:
             print(f"Added callback for key '{key}'")
-            cmds.append(cand.registered_callback.callback)
-        instances = [_.typer_instance for _ in cand.registered_groups]
-        candidates = [_ for _ in instances if _ is not None]
-    return cmds
+            funcs.append(_app.registered_callback.callback)
+        groups = _app.registered_groups
+        instances = [_.typer_instance for _ in groups if _ is not None]
+        _apps = [_ for _ in instances if isinstance(_, Typer)]
+
+    if key is None:
+        if _app.registered_callback:
+            print(f"Added callback for key '{key}'")
+            funcs.append(_app.registered_callback.callback)
+    _cmds = [_ for _ in _app.registered_commands if _.name == key]
+    if len(_cmds) == 1:
+        funcs.append(_cmds[0].callback)
+
+    print(f"Could not find the command (key={group_keys[-1]})")
+    return funcs
 
 
 def test_cmd_from_keys_flat(app0):
-    cmds = cmds_from_keys(app0, ["zero"])
+    cmds = funcs_from_keys(app0, ["zero"])
     assert cmds == [cb0]
     with pytest.raises(ValueError):
-        cmds = cmds_from_keys(app0, ["wrong"])
+        cmds = funcs_from_keys(app0, ["wrong"])
     with pytest.raises(ValueError):
-        cmds = cmds_from_keys(app0, ["zero", "wrong"])
-    # add commands
+        cmds = funcs_from_keys(app0, ["zero", "wrong"])
+
+
+def test_cmd_from_keys_flat_with_cmd(app0):
     app0.command("cmd0")(cmd0)
-    cmds = cmds_from_keys(app0, ["cmd0"])
+    cmds = funcs_from_keys(app0, ["zero", "cmd0"])
     assert cmds == [cmd0]
 
 
 def test_cmd_from_keys_nested(app01):
-    cmds = cmds_from_keys(app01, ["zero"])
+    cmds = funcs_from_keys(app01, ["zero"])
     assert cmds == [cb0]
-    cmds = cmds_from_keys(app01, ["zero", "one"])
+    cmds = funcs_from_keys(app01, ["zero", "one"])
     assert cmds == [cb0, cb1]
     with pytest.raises(ValueError):
-        cmds = cmds_from_keys(app01, ["wrong"])
+        cmds = funcs_from_keys(app01, ["wrong"])
     with pytest.raises(ValueError):
-        cmds = cmds_from_keys(app01, ["zero", "wrong"])
+        cmds = funcs_from_keys(app01, ["zero", "wrong"])
     with pytest.raises(ValueError):
-        cmds = cmds_from_keys(app01, ["zero", "one", "wrong"])
+        cmds = funcs_from_keys(app01, ["zero", "one", "wrong"])
 
 
 def combine(funcs):
