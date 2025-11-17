@@ -1,3 +1,4 @@
+import argparse
 from collections.abc import Callable, Sequence
 from inspect import Parameter, Signature, signature
 from pathlib import Path
@@ -256,6 +257,14 @@ ARGS_FILENAME = "args.yml"
 
 
 def app_with_yaml_support(app: Typer, keys: list[str] | str | None = None) -> Typer:
+    # use yaml only if no args were provided in the cmdline
+    parser = argparse.ArgumentParser(add_help=False)
+    _, unknown_args = parser.parse_known_args()
+    if unknown_args:
+        return app
+
+    # read args from yaml
+    print("Running app with YAML support since no args were provided")
     yamlpath = Path(ARGS_FILENAME)
     if keys is None and app.info.name is not None:
         print(f"Using app name ({app.info.name}) as top-level key")
@@ -267,6 +276,7 @@ def app_with_yaml_support(app: Typer, keys: list[str] | str | None = None) -> Ty
         print("WARNING: yamlargs is not a dict. Assuming an empty dict instead.")
         yamlargs = {}
 
+    # assimilate callbacks/callback from the app(s) into a single command
     cmd_names = list(map(lambda s: s.replace("!", ""), all_keys[2:]))
     funcs = app_funcs_from_keys(app, cmd_names)
 
@@ -275,6 +285,7 @@ def app_with_yaml_support(app: Typer, keys: list[str] | str | None = None) -> Ty
 
     combined = combine_funcs(funcs, kwargs_updater=parse_yamlargs)
 
+    # return the new app
     newapp = Typer()
     newapp.command()(combined)
     return newapp
