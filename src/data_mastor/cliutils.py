@@ -1,5 +1,5 @@
-import inspect
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from inspect import Parameter, Signature, signature
 from pathlib import Path
 from typing import Any, cast
 
@@ -9,16 +9,17 @@ from rich import print
 from typer import Context, Option, Typer
 
 
+# NEXT replace with combine_funcs
 def edit_signature(func, from_functions: list[Callable]):
     def dummy_func_with_ctx(ctx: Context):
         pass
 
     fullsig_dict: dict[str, Any] = {}
     for f in from_functions:
-        sig = inspect.signature(cast(Callable[..., Any], f))
+        sig = signature(cast(Callable[..., Any], f))
         fullsig_dict.update(sig.parameters)
-    ctx_sig = {"ctx": inspect.signature(dummy_func_with_ctx).parameters["ctx"]}
-    full_sig = inspect.Signature([*{**ctx_sig, **fullsig_dict}.values()])
+    ctx_sig = {"ctx": signature(dummy_func_with_ctx).parameters["ctx"]}
+    full_sig = Signature([*{**ctx_sig, **fullsig_dict}.values()])
     annots = {name: param.annotation for name, param in full_sig.parameters.items()}
     func.__signature__ = full_sig  # type: ignore
     func.__annotations__ = annots
@@ -103,40 +104,13 @@ def yaml_nested_dict_get(
                 break
             marked_keys = [k for k in yamlpart if "!" in k]
             if len(marked_keys) > 1:
-                raise KeyError(f"There are more than one keys with '!': {marked_keys}")
+                raise KeyError(f"There are multiple marked keys: {marked_keys}")
             if len(marked_keys) == 0:
                 break
             unknown_keys.append(marked_keys[0])
             yamlpart = yamlpart[unknown_keys[-1]]
         keys += unknown_keys
     return [str(yamlpath)] + keys, yamlpart
-
-
-def yamlargs_from_params(
-    yamlargs: dict[str, Any], ctx: Context, edit_ctx_values=True
-) -> dict[str, Any]:
-    updated_yamlargs = {}
-    for k, v in yamlargs.items():
-        if k not in ctx.params:
-            print(f"Using yaml arg {k}={v} (unspecified arg)")
-            updated_yamlargs[k] = v
-            continue
-        val = ctx.params[k]
-        if ctx.get_parameter_source(k) == ParameterSource.COMMANDLINE:
-            print(f"Ignoring yaml arg {k}={v} (overriden by cmdline value: {val})")
-            continue
-        # treat yaml arg as coming from the cmdline
-        ctx.set_parameter_source(k, ParameterSource.COMMANDLINE)
-        if v != val:
-            print(f"Using yaml arg {k}={v} (different ctx value={val})")
-        else:
-            print(f"Using yaml arg {k}={v} (same as ctx value)")
-        updated_yamlargs[k] = v
-
-    if edit_ctx_values:
-        for k, v in updated_yamlargs.items():
-            ctx.params[k] = v
-    return updated_yamlargs
 
 
 def app_funcs_from_keys(app: Typer, keys: list[str] | str | None = None):
@@ -180,8 +154,9 @@ def app_funcs_from_keys(app: Typer, keys: list[str] | str | None = None):
         tpr = key_tprs[0]
         i += 1
 
+    # look for commands
+
     # check if the current app (tpr variable) has at least one command
-    print(f"Looking for cmd at iteration '{i}'")
     if not tpr.registered_commands:
         raise ValueError(f"App({i}) has no registered commands")
 
@@ -207,6 +182,76 @@ def app_funcs_from_keys(app: Typer, keys: list[str] | str | None = None):
     return funcs
 
 
+def combine_funcs(
+    funcs: Sequence[Callable], kwargs_updater: Callable | None = None
+) -> Callable[..., None]:
+    if not funcs:
+        raise ValueError(f"Sequence of functions argument seems empty ({funcs})")
+
+    def combined(**kwargs):
+        if kwargs_updater is not None:
+            params = signature(kwargs_updater).parameters
+            kw = {k: v for k, v in kwargs.items() if k in params}
+            print(f"Combined func: calling keywords_updater with: {kw}")
+            updates = kwargs_updater(**kw)
+            kwargs.update(updates)
+        for f in funcs:
+            params = signature(f).parameters
+            kw = {k: v for k, v in kwargs.items() if k in params}
+            print(f"Combined func: calling {f.__name__} with: {kw}")
+            f(**kw)
+
+    names = []
+    params = {}
+    if kwargs_updater is not None:
+        names.append(kwargs_updater.__name__)
+        params.update(signature(kwargs_updater).parameters)
+    for f in funcs:
+        names.append(f.__name__)
+        params.update(signature(f).parameters)
+    combined.__name__ = "__".join(names)
+
+    # sort by kind
+    order = {
+        Parameter.POSITIONAL_ONLY: 0,
+        Parameter.POSITIONAL_OR_KEYWORD: 1,
+        Parameter.VAR_POSITIONAL: 2,
+        Parameter.KEYWORD_ONLY: 3,
+        Parameter.VAR_KEYWORD: 4,
+    }
+    sorted_params = dict(sorted(params.items(), key=lambda item: order[item[1].kind]))
+
+    combined.__signature__ = Signature(list(sorted_params.values()))  # type: ignore
+    return combined
+
+
+def yamlargs_from_params(
+    yamlargs: dict[str, Any], ctx: Context, edit_ctx_values=True
+) -> dict[str, Any]:
+    updated_yamlargs = {}
+    for k, v in yamlargs.items():
+        if k not in ctx.params:
+            print(f"Using yaml arg {k}={v} (unspecified arg)")
+            updated_yamlargs[k] = v
+            continue
+        val = ctx.params[k]
+        if ctx.get_parameter_source(k) == ParameterSource.COMMANDLINE:
+            print(f"Ignoring yaml arg {k}={v} (overriden by cmdline value: {val})")
+            continue
+        # treat yaml arg as coming from the cmdline
+        ctx.set_parameter_source(k, ParameterSource.COMMANDLINE)
+        if v != val:
+            print(f"Using yaml arg {k}={v} (different ctx value={val})")
+        else:
+            print(f"Using yaml arg {k}={v} (same as ctx value)")
+        updated_yamlargs[k] = v
+
+    if edit_ctx_values:
+        for k, v in updated_yamlargs.items():
+            ctx.params[k] = v
+    return updated_yamlargs
+
+
 ARGS_FILENAME = "args.yml"
 
 
@@ -222,52 +267,17 @@ def app_with_yaml_support(app: Typer, keys: list[str] | str | None = None) -> Ty
         print("WARNING: yamlargs is not a dict. Assuming an empty dict instead.")
         yamlargs = {}
 
-    group_names = list(map(lambda s: s.replace("!", ""), all_keys[1:-1]))
-    # find the command marked in the yaml
-    # typer_info = app
-    # for key in group_names:
-    #     typer_obj = typer_obj.registered_groups
-    cmd_name = all_keys[-1].replace("!", "")
-    # cmd = None
-    # for reg_cmd in app.registered_commands:
-    #     if reg_cmd.callback is None:
-    #         raise RuntimeError(f"Encountered NULL callback: {reg_cmd.callback}")
-    #     if reg_cmd.name == cmd_name or reg_cmd.callback.__name__ == cmd_name:
-    #         cmd = reg_cmd
-    #         break
-    # else:
-    #     raise RuntimeError(f"Typer app has no registered command named: {cmd_name}")
-    # app.registered_commands = [cmd]
-    # print(f"Command name: {cmd.name or reg_cmd.callback.__name__}")
+    cmd_names = list(map(lambda s: s.replace("!", ""), all_keys[2:]))
+    funcs = app_funcs_from_keys(app, cmd_names)
 
-    # add callback to parse the yaml args, incorporating the existing callback (if any)
+    def parse_yamlargs(ctx: Context):
+        return yamlargs_from_params(yamlargs, ctx)
 
-    ex_callback = (
-        app.registered_callback.callback
-        if app.registered_callback is not None
-        else None
-    )
+    combined = combine_funcs(funcs, kwargs_updater=parse_yamlargs)
 
-    def parser(ctx: Context):
-        print(f"Running parsing_callback with params: {ctx.params}")
-        ctx.obj = {}
-        ctx.obj["yamlargs"] = yamlargs_from_params(yamlargs, ctx, edit_ctx_values=False)
-
-    if ex_callback is not None:
-        print("1")
-
-        def combined_callback(ctx: Context, **kwargs):
-            parser(ctx)
-            print(f"Running ex-callback with params: {ctx.params}")
-            kw = {k: v for k, v in kwargs.items() if k in ex_callback.__annotations__}
-            ex_callback(ctx, **kw)
-
-        # app.callback()(edit_signature(combined_callback, [ex_callback]))
-    else:
-        print("2")
-        # app.callback()(parser)
-
-    return app
+    newapp = Typer()
+    newapp.command()(combined)
+    return newapp
 
 
 Opt = Option

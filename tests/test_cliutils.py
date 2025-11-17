@@ -264,24 +264,6 @@ class Test_app_funcs_from_keys:
         _assert_result(ret, app_funcs_from_keys, app, keys=keys)
 
 
-def combine(funcs):
-    def combined(**kwargs):
-        for f in funcs:
-            params = signature(f).parameters
-            kw = {k: v for k, v in kwargs.items() if k in params}
-            print(f"Calling {f.__name__} with: {kw}")
-            f(**kw)
-
-    all_names = []
-    all_params = {}
-    for f in funcs:
-        all_names.append(f.__name__)
-        all_params.update(signature(f).parameters)
-    combined.__name__ = "__".join(all_names)
-    combined.__signature__ = Signature(list(all_params.values()))  # type: ignore
-    return combined
-
-
 def assimilate(megafunc):
     def outer(newfunc):
         mega_params = signature(megafunc).parameters
