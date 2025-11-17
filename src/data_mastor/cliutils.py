@@ -3,14 +3,14 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
-import typer
 import yaml
 from click.core import ParameterSource
 from rich import print
+from typer import Context, Option, Typer
 
 
 def edit_signature(func, from_functions: list[Callable]):
-    def dummy_func_with_ctx(ctx: typer.Context):
+    def dummy_func_with_ctx(ctx: Context):
         pass
 
     fullsig_dict: dict[str, Any] = {}
@@ -50,7 +50,7 @@ def get_yamldict_key(
         return default
 
 
-def nested_yaml_dict_get(
+def yaml_nested_dict_get(
     yamlpath: str | Path,
     keys: list[str] | str | None = None,
     trace_unknown_keys: bool = True,
@@ -113,7 +113,7 @@ def nested_yaml_dict_get(
 
 
 def yamlargs_from_params(
-    yamlargs: dict[str, Any], ctx: typer.Context, edit_ctx_values=True
+    yamlargs: dict[str, Any], ctx: Context, edit_ctx_values=True
 ) -> dict[str, Any]:
     updated_yamlargs = {}
     for k, v in yamlargs.items():
@@ -139,33 +139,106 @@ def yamlargs_from_params(
     return updated_yamlargs
 
 
+def app_funcs_from_keys(app: Typer, keys: list[str] | str | None = None):
+    if keys is None:
+        keys = []
+    elif isinstance(keys, str):
+        keys = [keys]
+    cmdkey = None
+    funcs: list[Callable] = []
+    tpr = app
+    i = 0
+    while True:
+        # look for callback
+        if tpr.registered_callback:
+            if tpr.registered_callback.callback is None:
+                print(f"WARNING: Skipping NULL callback from App({i})")
+            else:
+                _f = tpr.registered_callback.callback
+                print(f"Adding callback '{_f}' from App({i})")
+                funcs.append(_f)
+        # break if we reached the last key
+        if i >= len(keys):
+            break
+        # go to the next group
+        key = keys[i]
+        key_tprs = []
+        for g in tpr.registered_groups:
+            if g.typer_instance is None:
+                print(f"WARNING: Skipping NULL group ({g}) from App({i}")
+                continue
+            if g.name == key or g.typer_instance.info.name == key:
+                key_tprs.append(g.typer_instance)
+        if len(key_tprs) > 1:
+            raise ValueError(f"App({i}) has multiple subapps named '{key}'")
+        if not key_tprs:
+            if i == len(keys) - 1:
+                # the last key is not a group key (it should be a command key)
+                cmdkey = key
+                break
+            raise ValueError(f"App({i}) has no subapps named '{key}')")
+        tpr = key_tprs[0]
+        i += 1
+
+    # check if the current app (tpr variable) has at least one command
+    print(f"Looking for cmd at iteration '{i}'")
+    if not tpr.registered_commands:
+        raise ValueError(f"App({i}) has no registered commands")
+
+    # if the last key corresponds to a command, use it to find the command
+    if cmdkey is not None:
+        cmds = [_ for _ in tpr.registered_commands if _.callback is not None]
+        key_cmds = [_ for _ in cmds if key in [_.name, _.callback.__name__]]  # type: ignore
+        if len(key_cmds) > 1:
+            raise ValueError(f"App{i} has multiple commands matching '{cmdkey}'")
+        if not key_cmds:
+            raise ValueError(f"App{i} has no command matching '{cmdkey}')")
+        funcs.append(key_cmds[0].callback)  # type: ignore
+        return funcs
+
+    # the last key corresponds to an app, look for a single command
+    if len(tpr.registered_commands) > 1:
+        raise ValueError(f"App({i}) has multiple commands but no cmdkey was given")
+    if tpr.registered_groups:
+        raise ValueError(f"App({i}) has groups but no cmdkey was given")
+    if tpr.registered_commands[0].callback is None:
+        raise ValueError(f"App({i}) has a single command but it is NULL")
+    funcs.append(tpr.registered_commands[0].callback)
+    return funcs
+
+
 ARGS_FILENAME = "args.yml"
 
 
-def app_with_yaml_support(
-    app: typer.Typer, keys: list[str] | str | None = None
-) -> typer.Typer:
+def app_with_yaml_support(app: Typer, keys: list[str] | str | None = None) -> Typer:
     yamlpath = Path(ARGS_FILENAME)
-    all_keys, yamlargs = nested_yaml_dict_get(yamlpath, keys=keys)
+    if keys is None and app.info.name is not None:
+        print(f"Using app name ({app.info.name}) as top-level key")
+        keys = app.info.name
+    all_keys, yamlargs = yaml_nested_dict_get(yamlpath, keys=keys)
     print(f"Yamlargs from {all_keys}:")
     print(yamlargs)
     if not isinstance(yamlargs, dict):
         print("WARNING: yamlargs is not a dict. Assuming an empty dict instead.")
         yamlargs = {}
-    cmd_name = all_keys[-1].replace("!", "")
 
-    # register the yaml command alone
-    cmd = None
-    for reg_cmd in app.registered_commands:
-        if reg_cmd.callback is None:
-            raise RuntimeError(f"Encountered NULL callback: {reg_cmd.callback}")
-        if reg_cmd.name == cmd_name or reg_cmd.callback.__name__ == cmd_name:
-            cmd = reg_cmd
-            break
-    else:
-        raise RuntimeError(f"Typer app has no registed command named: {cmd_name}")
-    app.registered_commands = [cmd]
-    print(f"Command name: {cmd.name or reg_cmd.callback.__name__}")
+    group_names = list(map(lambda s: s.replace("!", ""), all_keys[1:-1]))
+    # find the command marked in the yaml
+    # typer_info = app
+    # for key in group_names:
+    #     typer_obj = typer_obj.registered_groups
+    cmd_name = all_keys[-1].replace("!", "")
+    # cmd = None
+    # for reg_cmd in app.registered_commands:
+    #     if reg_cmd.callback is None:
+    #         raise RuntimeError(f"Encountered NULL callback: {reg_cmd.callback}")
+    #     if reg_cmd.name == cmd_name or reg_cmd.callback.__name__ == cmd_name:
+    #         cmd = reg_cmd
+    #         break
+    # else:
+    #     raise RuntimeError(f"Typer app has no registered command named: {cmd_name}")
+    # app.registered_commands = [cmd]
+    # print(f"Command name: {cmd.name or reg_cmd.callback.__name__}")
 
     # add callback to parse the yaml args, incorporating the existing callback (if any)
 
@@ -175,24 +248,26 @@ def app_with_yaml_support(
         else None
     )
 
-    def parsing_callback(ctx: typer.Context):
-        print("Running parsing_callback")
+    def parser(ctx: Context):
+        print(f"Running parsing_callback with params: {ctx.params}")
         ctx.obj = {}
         ctx.obj["yamlargs"] = yamlargs_from_params(yamlargs, ctx, edit_ctx_values=False)
 
     if ex_callback is not None:
+        print("1")
 
-        def combined_callback(ctx: typer.Context, **kwargs):
-            parsing_callback(ctx)
-            print("Running ex-callback")
+        def combined_callback(ctx: Context, **kwargs):
+            parser(ctx)
+            print(f"Running ex-callback with params: {ctx.params}")
             kw = {k: v for k, v in kwargs.items() if k in ex_callback.__annotations__}
             ex_callback(ctx, **kw)
 
         # app.callback()(edit_signature(combined_callback, [ex_callback]))
     else:
-        # app.callback()(parsing_callback)
-        pass
+        print("2")
+        # app.callback()(parser)
+
     return app
 
 
-Opt = typer.Option
+Opt = Option

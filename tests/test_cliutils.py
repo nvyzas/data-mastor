@@ -1,7 +1,9 @@
 import inspect
+import random
 from collections.abc import Callable
 from functools import wraps
 from inspect import Signature, get_annotations, signature
+from typing import Any, Collection
 from unittest.mock import MagicMock, Mock
 
 import click
@@ -10,6 +12,8 @@ from click.testing import Result
 from rich import print
 from typer import Context, Typer
 from typer.testing import CliRunner
+
+from data_mastor.cliutils import app_funcs_from_keys
 
 calls = []
 
@@ -78,108 +82,96 @@ def test_auto_invoke(app0: Typer, app1: Typer) -> None:
     check([0, 1])
 
 
-def app_funcs_from_keys(app: Typer, keys: list[str] | None = None):
-    if keys is None:
-        keys = []
-    funcs: list[Callable] = []
-    tpr = app
-    i = 0
+def _different(collection: Collection):
     while True:
-        # look for callback
-        if tpr.registered_callback:
-            if tpr.registered_callback.callback is None:
-                print(f"WARNING: Skipping NULL callback at iteration '{i}'")
-            else:
-                _f = tpr.registered_callback.callback
-                print(f"Adding callback '{_f}' at iteration '{i}'")
-                funcs.append(_f)
-        # check we reached the last key, or there is no key
-        if i >= len(keys) - 1:
-            break
-        # go to the next group
-        key = keys[i]
-        key_tprs = []
-        for g in tpr.registered_groups:
-            if g.typer_instance is None:
-                print(f"WARNING: group {g} named '{g.name}' has no typer instance")
-                continue
-            if g.name == key or g.typer_instance.info.name == key:
-                key_tprs.append(g.typer_instance)
-        if len(key_tprs) > 1:
-            raise ValueError(f"There are more than one apps named '{key}'")
-        if not key_tprs:
-            raise ValueError(f"There is no app named '{key}' (keys: {keys})")
-        tpr = key_tprs[0]
-        i += 1
-
-    # look for the command
-    print(f"Looking for cmd at iteration '{i}'")
-
-    # use (the last) key to find the command
-    if keys:
-        key = keys[-1]
-        cmds = [_ for _ in tpr.registered_commands if _.callback is not None]
-        key_cmds = [_ for _ in cmds if key in [_.name, _.callback.__name__]]  # type: ignore
-        if len(key_cmds) > 1:
-            raise ValueError(f"There are multiple valid commands matching '{key}'")
-        if not key_cmds:
-            raise ValueError(f"No valid command found matching '{key}')")
-        funcs.append(key_cmds[0].callback)  # type: ignore
-        return funcs
-
-    # if there are groups
-    if tpr.registered_groups:
-        raise ValueError("App contains groups, but no keys were given")
-    # if there is no command, return the funcs (containing only callbacks)
-    if not tpr.registered_commands:
-        raise ValueError("Top-level app  has no registered commands")
-    # check if it's a single command
-    if len(tpr.registered_commands) == 1:
-        if tpr.registered_commands[0].callback is None:
-            raise ValueError("The single command is invalid (has no function)")
-        funcs.append(tpr.registered_commands[0].callback)
-        return funcs
+        i = random.randint(100, 10000)
+        if i not in collection:
+            return i
 
 
-mocks = {}
+mocks: dict[str | int, Callable] = {}
 
 
-def ff(id_: str | int) -> Callable:
+def ff(id_: int | None = None) -> Callable:
     """Function Factory (using mocks)"""
+    if id_ is None:
+        id_ = _different(mocks)
+    elif (mock := mocks.get(id_)) is not None:
+        return mock
 
-    def _printer():
+    def _printer() -> None:
         print(id_)
 
-    nm = f"f{id_}"
-    return mocks.setdefault(
-        id_, MagicMock(return_value=id_, side_effect=_printer, name=nm, __name__=nm)
-    )
+    name = str(id_)
+    mock = MagicMock(return_value=id_, side_effect=_printer, name=name, __name__=name)
+    mocks[id_] = mock
+    return mock
 
 
-def test_cmd_from_keys_single_callback() -> None:
-    app0 = Typer()
-    app0.callback()(ff(1))
-    funcs = app_funcs_from_keys(app0)
-    assert funcs == [ff(1)]
+class Tf:
+    """(Typer) App Factory"""
+
+    apps: dict[str | int, Typer] = {}
+
+    def __init__(self, allow_get: bool = True, allow_edit: bool = True) -> None:
+        self.allow_get = allow_get
+        self.allow_edit = allow_edit
+
+    def __call__(
+        self,
+        id_: str | int | None = None,
+        cb: Callable | None = None,
+        cmds: list[Callable] | Callable | None = None,
+        tprs: list[Typer] | Typer | None = None,
+        allow_get: bool | None = None,
+        allow_edit: bool | None = None,
+    ) -> Typer:
+        allow_get = self.allow_get if allow_get is None else allow_get
+        allow_edit = self.allow_edit if allow_edit is None else allow_edit
+        # create new app or try to get app
+        app = None
+        if id_ is None:
+            id_ = _different(self.apps)
+        elif allow_get:
+            app = self.apps.get(id_, None)
+        if app is None:
+            app = Typer(name=str(id_))
+        elif not self.allow_edit:
+            return app
+        if cb is not None:
+            app.callback()(cb)
+        if cmds is not None:
+            app.registered_commands = []
+            if isinstance(cmds, Callable):
+                cmds = [cmds]
+            for cmd in cmds:
+                app.command()(cmd)
+        if tprs is not None:
+            app.registered_groups = []
+            if isinstance(tprs, Typer):
+                tprs = [tprs]
+            for tpr in tprs:
+                app.add_typer(tpr)
+        self.apps[id_] = app
+        return app
 
 
-def test_cmd_from_keys_single_command() -> None:
-    app1 = Typer()
-    app1.command()(ff(2))
-    funcs = app_funcs_from_keys(app1)
-    assert funcs == [ff(2)]
+tf = Tf()
+tfn = Tf(allow_get=False)
 
 
-def test_cmd_from_keys_callback_and_command() -> None:
-    app2 = Typer()
-    app2.callback()(ff(1))
-    app2.command()(ff(2))
-    funcs = app_funcs_from_keys(app2)
-    assert funcs == [ff(1), ff(2)]
+def _assert_result(result: Any, func: Callable, *args, **kwargs):
+    resultcls = type(result)
+    if issubclass(resultcls, Exception):
+        with pytest.raises(resultcls, match=result.args[0]):
+            func(*args, **kwargs)
+    else:
+        funcs = app_funcs_from_keys(*args, **kwargs)
+        assert funcs == result
 
 
 @pytest.fixture
-def nested():
+def _nested() -> dict[str | None, Typer]:
     # a4
     app4 = Typer(name="a4")
     app4.callback()(ff(40))
@@ -197,40 +189,99 @@ def nested():
     app2.add_typer(app3)
     app2.add_typer(app4)
     # a1
-    app1 = Typer()
+    app1 = Typer(name="a1")
     app1.callback()(ff(10))
     app1.command()(ff(11))
     app1.add_typer(app2)
-    return app1
+    # dict
+    nest = {app.info.name: app for app in [app1, app2, app3, app4]}
+    return nest
+
+
+@pytest.fixture
+def app_name() -> str:
+    return "invalid"
+
+
+@pytest.fixture
+def app(_nested, app_name: str) -> Typer:
+    return _nested[app_name]
 
 
 class Test_app_funcs_from_keys:
-    def test_exceptions(self, nested: Typer) -> None:
-        # contains groups, but no keys
-        with pytest.raises(ValueError, match="contains groups, but no keys"):
-            app_funcs_from_keys(nested)
-        # no valid command found matching
-        with pytest.raises(ValueError, match="No valid command found matching"):
-            app_funcs_from_keys(nested, ["a2"])
-        with pytest.raises(ValueError, match="No valid command found matching"):
-            app_funcs_from_keys(nested, ["a2", "a3"])
-        # has no registered commands
-        nested.registered_groups = []
-        nested.registered_commands = []
+    def test_single_command_with_callback(self) -> None:
+        app2 = Typer()
+        app2.callback()(ff(1))
+        app2.command()(ff(2))
+        funcs = app_funcs_from_keys(app2)
+        assert funcs == [ff(1), ff(2)]
+
+    def test_single_command_without_callback(self) -> None:
+        app1 = Typer()
+        app1.command()(ff(2))
+        funcs = app_funcs_from_keys(app1)
+        assert funcs == [ff(2)]
+
+    def test_single_command_only_callback(self) -> None:
+        app0 = Typer()
+        app0.callback()(ff(1))
         with pytest.raises(ValueError, match="has no registered commands"):
-            app_funcs_from_keys(nested)
+            app_funcs_from_keys(app0)
 
-    def test_match_single_command(self, nested: Typer) -> None:
-        app_funcs_from_keys(nested, ["a2", "a3", "a4"])
+    @pytest.mark.parametrize(
+        ["app_name", "keys", "ret"],
+        [
+            ["a1", [], ValueError("groups but no cmdkey")],
+            ["a1", ["a2"], ValueError("groups but no cmdkey")],
+        ],
+    )
+    def test_single_command_no_cmdkey_1(self, _nested, app_name, keys, ret) -> None:
+        _assert_result(ret, app_funcs_from_keys, _nested[app_name])
 
-    def test_normal(self, nested: Typer) -> None:
+    VE1 = ValueError("has no registered commands")
+    VE2 = ValueError("has multiple commands but no cmdkey was given")
+    VE3 = ValueError("has groups but no cmdkey was given")
+    tests = {
+        "no-key-l1": [tf(cmds=ff(1)), [], [ff(1)]],
+        "no-key-l1_no-cmds": [tf(), [], VE1],
+        "no-key-l1_mult-cmds": [tf(cmds=[ff(), ff()]), [], VE2],
+        "no-key-l1_groups": [tf(cmds=ff(), tprs=tf()), [], VE3],
+        "no-key-l2": [tf(tprs=tf("a2", cmds=ff(1))), ["a2"], [ff(1)]],
+        "no-key-l2_no-cmds": [tf(tprs=tf("a2", cmds=[])), ["a2"], VE1],
+        "no-key-l2_mult-cmds": [tf(tprs=tf("a2", cmds=[ff(), ff()])), ["a2"], VE2],
+        "no-key-l2_groups": [tf(tprs=tf("a2", cmds=ff(), tprs=tf())), ["a2"], VE3],
+    }
+
+    @pytest.mark.parametrize(["app", "keys", "ret"], tests.values(), ids=tests.keys())
+    def test_single_command(self, app: Typer, keys: list[str], ret) -> None:
+        _assert_result(ret, app_funcs_from_keys, app, keys=keys)
+
+    def test_exceptions(self, _nested) -> None:
+        # contains groups, but no keys
+        with pytest.raises(VE, match="no single command (no keys were given)"):
+            app_funcs_from_keys(_nested)
+        # no valid command found matching
+        with pytest.raises(VE, match="No valid command found matching"):
+            app_funcs_from_keys(_nested, ["a2"])
+        with pytest.raises(VE, match="No valid command found matching"):
+            app_funcs_from_keys(_nested, ["a2", "a3"])
+        # has no registered commands
+        _nested.registered_groups = []
+        _nested.registered_commands = []
+        with pytest.raises(VE, match="has no registered commands"):
+            app_funcs_from_keys(_nested)
+
+    def test_match_single_command(self, _nested: Typer) -> None:
+        app_funcs_from_keys(_nested, ["a2", "a3", "a4"])
+
+    def test_normal(self, _nested: Typer) -> None:
         # lvl1 command
-        assert app_funcs_from_keys(nested, ["f11"]) == [ff(10), ff(11)]
+        assert app_funcs_from_keys(_nested, ["f11"]) == [ff(10), ff(11)]
         # lvl2 command
-        funcs = app_funcs_from_keys(nested, ["a2", "f21"])
+        funcs = app_funcs_from_keys(_nested, ["a2", "f21"])
         assert funcs == [ff(10), ff(20), ff(21)]
         # lvl3 command
-        funcs = app_funcs_from_keys(nested, ["a2", "a3", "f32"])
+        funcs = app_funcs_from_keys(_nested, ["a2", "a3", "f32"])
         assert funcs == [ff(10), ff(20), ff(30), ff(32)]
 
 
