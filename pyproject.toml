@@ -9,6 +9,7 @@ dependencies = [
     "deepdiff>=8.6.1",
     "pandas>=2.3.3",
     "psutil>=7.1.1",
+    "pytest-cov>=7.0.0",
     "pyyaml>=6.0.3",
     "scrapy>=2.13.3",
     "sqlalchemy>=2.0.44",
@@ -34,16 +35,22 @@ requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project.scripts]
-dm = "data_mastor.dbman:entrypoint"
+dm = "data_mastor.cli:app"
 
 # TOOLS
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov-config pyproject.toml --cov-report=term --cov-report=html --cov-report=xml"
+
+[tool.coverage.run]
+source_pkgs = ["data_mastor"]
+
+[tool.coverage.report]
+omit = ["__init__.py"]
 
 [tool.ruff]
 [tool.ruff.lint]
 per-file-ignores = { "tests/scraper/conftest.py" = ["F401"] }
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
 
 [tool.mypy]
 packages=["data_mastor"]
@@ -52,3 +59,4 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 strict_equality = true
 check_untyped_defs = true
+

@@ -17,7 +17,7 @@ from data_mastor.cliutils import (
     Opt,
     app_with_yaml_support,
     edit_signature,
-    nested_yaml_dict_get,
+    yaml_nested_dict_get,
     yamlargs_from_params,
 )
 from data_mastor.scraper.middlewares import PrivacyCheckerDlMw, ResponseSaverSpMw
@@ -349,11 +349,11 @@ class Baze(Spider):
 
         # apply remaining settings (non class-specified that are coming from yaml)
         dct = {k: v for k, v in kwargs.items() if k.isupper()}
-        Baze._verbose_update(cls._settings, dct, "unspecified yaml setting", False)
+        Baze._verbose_update(cls._settings, dct, "unspecified setting", False)
         [kwargs.pop(k) for k in dct]
         # apply remaining spiderargs (non class-specified that are coming from yaml)
         dct = {k: v for k, v in kwargs.items() if k not in cls._spiderargs}
-        Baze._verbose_update(cls._spiderargs, dct, "unspecified yaml spiderarg", False)
+        Baze._verbose_update(cls._spiderargs, dct, "unspecified spiderarg", False)
         [kwargs.pop(k) for k in dct]
 
         # unused args
@@ -361,13 +361,15 @@ class Baze(Spider):
             print(f"WARNING: There are remaining (unused) args: {kwargs}")
             kwargs = {}
 
-        # delete default, non-explicit settings (to be reapplied in from_crawler)
+        # delete not-explicitly-given settings
+        # (with default values to be reapplied in from_crawler)
         for k, v in cls.all_sett_specs().items():
             if ctx.get_parameter_source(k) == ParameterSource.COMMANDLINE:
                 continue
             if k in cls._settings and v == cls._settings[k]:
                 del cls._settings[k]
-        # delete default, non-explicit spiderargs (to be reapplied in __init__)
+        # delete not explicitly-given spiderargs
+        # (with default values to be reapplied in __init__)
         for k, v in cls.all_sparg_specs().items():
             if ctx.get_parameter_source(k) == ParameterSource.COMMANDLINE:
                 continue
@@ -427,7 +429,7 @@ class Baze(Spider):
         return app
 
     @classmethod
-    def run_cli(cls) -> None:
+    def cli_run(cls) -> None:
         """Permits convenienty runnning cls.main from spider subclass modules via
         Subclass.cli(); no the need to import typer and use typer.run(subclass.main)."""
         app = cls.cli_app()
@@ -486,7 +488,7 @@ class Meta(type):
         if not info_file:
             return c
         codename = name[:-3].lower()
-        _, info = nested_yaml_dict_get(info_file, [codename], doraise=False)
+        _, info = yaml_nested_dict_get(info_file, [codename], doraise=False)
         spider_info = info.get(spidertype.lower(), {})
         # set custom classvars: shop name, html_fields
         setattr(c, "shop", info.get("name", codename))
@@ -599,4 +601,4 @@ class ShopSrc(BazeSrc):
 
 
 if __name__ == "__main__":
-    ShopSrc.run_cli()
+    ShopSrc.cli_run()

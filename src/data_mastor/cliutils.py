@@ -169,7 +169,9 @@ def app_funcs_from_keys(app: Typer, keys: list[str] | str | None = None):
             raise ValueError(f"App{i} has multiple commands matching '{cmdkey}'")
         if not key_cmds:
             raise ValueError(f"App{i} has no command matching '{cmdkey}')")
-        funcs.append(key_cmds[0].callback)  # type: ignore
+        _f = key_cmds[0].callback
+        print(f"Adding command '{_f}' from App({i})")
+        funcs.append(_f)  # type: ignore
         return funcs
 
     # the last key corresponds to an app, look for a single command
@@ -179,7 +181,9 @@ def app_funcs_from_keys(app: Typer, keys: list[str] | str | None = None):
         raise ValueError(f"App({i}) has groups but no cmdkey was given")
     if tpr.registered_commands[0].callback is None:
         raise ValueError(f"App({i}) has a single command but it is NULL")
-    funcs.append(tpr.registered_commands[0].callback)
+    _f = tpr.registered_commands[0].callback
+    print(f"Adding (single) command '{_f}' from App({i})")
+    funcs.append(_f)
     return funcs
 
 
@@ -193,13 +197,13 @@ def combine_funcs(
         if kwargs_updater is not None:
             params = signature(kwargs_updater).parameters
             kw = {k: v for k, v in kwargs.items() if k in params}
-            print(f"Combined func: calling keywords_updater with: {kw}")
+            print(f"\nCombined: calling '{kwargs_updater.__name__}' with: {kw}")
             updates = kwargs_updater(**kw)
             kwargs.update(updates)
         for f in funcs:
             params = signature(f).parameters
             kw = {k: v for k, v in kwargs.items() if k in params}
-            print(f"Combined func: calling {f.__name__} with: {kw}")
+            print(f"\nCombined: calling '{f.__name__}' with: {kw}")
             f(**kw)
 
     names = []
@@ -236,15 +240,16 @@ def yamlargs_from_params(
             updated_yamlargs[k] = v
             continue
         val = ctx.params[k]
-        if ctx.get_parameter_source(k) == ParameterSource.COMMANDLINE:
+        src = ctx.get_parameter_source(k)
+        if src == ParameterSource.COMMANDLINE:
             print(f"Ignoring yaml arg {k}={v} (overriden by cmdline value: {val})")
             continue
+        if v != val:
+            print(f"Using yaml arg {k}={v} (ctx value from {src}: {val})")
+        else:
+            print(f"Using yaml arg {k}={v} (same as ctx value from {src})")
         # treat yaml arg as coming from the cmdline
         ctx.set_parameter_source(k, ParameterSource.COMMANDLINE)
-        if v != val:
-            print(f"Using yaml arg {k}={v} (different ctx value={val})")
-        else:
-            print(f"Using yaml arg {k}={v} (same as ctx value)")
         updated_yamlargs[k] = v
 
     if edit_ctx_values:

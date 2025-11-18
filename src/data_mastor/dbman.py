@@ -1,3 +1,4 @@
+import argparse
 import importlib
 import os
 import re
@@ -19,7 +20,7 @@ from sqlalchemy.orm.decl_api import DeclarativeBase
 from data_mastor.cliutils import app_with_yaml_support, get_yamldict_key
 
 # typer app
-app = typer.Typer(invoke_without_command=True, add_completion=False)
+app = typer.Typer(name="db", no_args_is_help=True, add_completion=False)
 
 # engine
 _engine: None | Engine = None
@@ -118,20 +119,20 @@ def _try_safely(func, ctx: typer.Context) -> None:
             _restore_backup(backup_filepath, db_filepath, ".dryrun")
 
 
-# @app.callback()
-# def callback(ctx: typer.Context):
-#     # init ctx obj to be shared
-#     ctx.obj = ctx.obj or {}
+@app.callback()
+def callback(ctx: typer.Context):
+    # init ctx obj to be shared
+    ctx.obj = ctx.obj or {}
 
-#     # get engine
-#     ctx.obj["engine"] = get_engine()
+    # get engine
+    ctx.obj["engine"] = get_engine()
 
-#     # get db filepath
-#     db_url = str(ctx.obj["engine"].url)
-#     if not db_url.startswith("sqlite:///"):
-#         raise RuntimeError(f"Invalid db url: {db_url}")
-#     db_filepath = Path(db_url.replace("sqlite:///", "", count=1))
-#     ctx.obj["db_filepath"] = db_filepath
+    # get db filepath
+    db_url = str(ctx.obj["engine"].url)
+    if not db_url.startswith("sqlite:///"):
+        raise RuntimeError(f"Invalid db url: {db_url}")
+    db_filepath = Path(db_url.replace("sqlite:///", "", count=1))
+    ctx.obj["db_filepath"] = db_filepath
 
 
 @app.command()
@@ -295,13 +296,5 @@ def migrate(ctx: typer.Context, backup=True, write_db=False):
     _try_safely(_migrate, ctx)
 
 
-def cli_app():
-    return app_with_yaml_support(app, keys=["dbman"])
-
-
-def entrypoint():
-    return cli_app()
-
-
 if __name__ == "__main__":
-    entrypoint()
+    app_with_yaml_support(app)()
