@@ -2,29 +2,12 @@ import argparse
 from collections.abc import Callable, Sequence
 from inspect import Parameter, Signature, signature
 from pathlib import Path
-from typing import Any, cast
+from typing import Annotated, Any, cast
 
 import yaml
 from click.core import ParameterSource
 from rich import print
 from typer import Context, Option, Typer
-
-
-# NEXT replace with combine_funcs
-def edit_signature(func, from_functions: list[Callable]):
-    def dummy_func_with_ctx(ctx: Context):
-        pass
-
-    fullsig_dict: dict[str, Any] = {}
-    for f in from_functions:
-        sig = signature(cast(Callable[..., Any], f))
-        fullsig_dict.update(sig.parameters)
-    ctx_sig = {"ctx": signature(dummy_func_with_ctx).parameters["ctx"]}
-    full_sig = Signature([*{**ctx_sig, **fullsig_dict}.values()])
-    annots = {name: param.annotation for name, param in full_sig.parameters.items()}
-    func.__signature__ = full_sig  # type: ignore
-    func.__annotations__ = annots
-    return func
 
 
 # DO replace all uses of this with nested_yaml_dict_get
@@ -187,6 +170,53 @@ def app_funcs_from_keys(app: Typer, keys: list[str] | str | None = None):
     return funcs
 
 
+# NEXT replace with combine_funcs
+def edit_function_signature(
+    func,
+    other_functions: list[Callable],
+    no_variadic=False,
+    edit_annotations=True,
+    edit_name=True,
+):
+    # get parameters
+    params: dict[str, Parameter] = {}
+    for f in other_functions:
+        sig = signature(cast(Callable[..., Any], f))
+        params.update(sig.parameters)
+
+    # remove variadic
+    if no_variadic:
+        to_del = [
+            k for k, v in params.items() if v.kind in [v.VAR_POSITIONAL, v.VAR_KEYWORD]
+        ]
+        for k in to_del:
+            del params[k]
+        print(f"Removed variadic signature elements: {to_del}")
+
+    # sort parameters by kind
+    order = {
+        Parameter.POSITIONAL_ONLY: 0,
+        Parameter.POSITIONAL_OR_KEYWORD: 1,
+        Parameter.VAR_POSITIONAL: 2,
+        Parameter.KEYWORD_ONLY: 3,
+        Parameter.VAR_KEYWORD: 4,
+    }
+    sorted_params = dict(sorted(params.items(), key=lambda item: order[item[1].kind]))
+
+    # edit signature
+    func.__signature__ = Signature(list(sorted_params.values()))  # type: ignore
+
+    # edit annotations
+    if edit_annotations:
+        annots = {name: param.annotation for name, param in sorted_params.items()}
+        func.__annotations__ = annots
+
+    # edit name
+    if edit_name:
+        func.__name__ = "__".join([_.__name__ for _ in other_functions])
+    return func
+
+
 def combine_funcs(
     funcs: Sequence[Callable], kwargs_updater: Callable | None = None
 ) -> Callable[..., None]:
@@ -206,27 +236,8 @@ def combine_funcs(
             print(f"\nCombined: calling '{f.__name__}' with: {kw}")
             f(**kw)
 
-    names = []
-    params = {}
-    if kwargs_updater is not None:
-        names.append(kwargs_updater.__name__)
-        params.update(signature(kwargs_updater).parameters)
-    for f in funcs:
-        names.append(f.__name__)
-        params.update(signature(f).parameters)
-    combined.__name__ = "__".join(names)
-
-    # sort by kind
-    order = {
-        Parameter.POSITIONAL_ONLY: 0,
-        Parameter.POSITIONAL_OR_KEYWORD: 1,
-        Parameter.VAR_POSITIONAL: 2,
-        Parameter.KEYWORD_ONLY: 3,
-        Parameter.VAR_KEYWORD: 4,
-    }
-    sorted_params = dict(sorted(params.items(), key=lambda item: order[item[1].kind]))
-
-    combined.__signature__ = Signature(list(sorted_params.values()))  # type: ignore
+    updater = [kwargs_updater] if kwargs_updater else []
+    edit_function_signature(combined, [*updater, *funcs], no_variadic=True)
     return combined
 
 
@@ -264,16 +275,23 @@ ARGS_FILENAME = "args.yml"
 def app_with_yaml_support(app: Typer, keys: list[str] | str | None = None) -> Typer:
     # use yaml only if no args were provided in the cmdline
     parser = argparse.ArgumentParser(add_help=False)
-    _, unknown_args = parser.parse_known_args()
-    if unknown_args:
+    # parser.add_argument("--yamlargs", type=str, help="path to a YAML file with args")
+    known, unknown = parser.parse_known_args()
+    print(known)
+    print(unknown)
+    if unknown:
         return app
 
     # read args from yaml
     print("Running app with YAML support since no args were provided")
     yamlpath = Path(ARGS_FILENAME)
-    if keys is None and app.info.name is not None:
-        print(f"Using app name ({app.info.name}) as top-level key")
-        keys = app.info.name
+    if keys is None:
+        if app.info.name:
+            print(f"Using app name ({app.info.name}) as top-level key")
+            keys = app.info.name
+        else:
+            # TODO use module name as a fallback
+            raise ValueError("App has no name")
     all_keys, yamlargs = yaml_nested_dict_get(yamlpath, keys=keys)
     print(f"Yamlargs from {all_keys}:")
     print(yamlargs)
@@ -297,3 +315,12 @@ def app_with_yaml_support(app: Typer, keys: list[str] | str | None = None) -> Ty
 
 
 Opt = Option
+
+
+# REF (copilot) use this to refactor spiders
+def opt(
+    dtype: type, names: str | list[str], help: str | None, panel: str | None, **kwargs
+) -> Annotated:
+    if isinstance(names, str):
+        names = [names]
+    return Annotated[dtype, Option(*names, help=help, rich_help_panel=panel, **kwargs)]

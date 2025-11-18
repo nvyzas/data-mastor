@@ -1,4 +1,3 @@
-import inspect
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -16,9 +15,8 @@ from scrapy.utils.project import get_project_settings
 from data_mastor.cliutils import (
     Opt,
     app_with_yaml_support,
-    edit_signature,
+    edit_function_signature,
     yaml_nested_dict_get,
-    yamlargs_from_params,
 )
 from data_mastor.scraper.middlewares import PrivacyCheckerDlMw, ResponseSaverSpMw
 from data_mastor.scraper.pipelines import TIMESTAMP_FMT, ListingStorer, SourceStorer
@@ -325,14 +323,6 @@ class Baze(Spider):
     @classmethod
     def _cli_full(cls, ctx: typer.Context, **kwargs) -> None:
         print("Running _cli_full")
-        # make sure args are reset (helps in testing)
-        cls._spiderargs = {}
-        cls._settings = {}
-
-        # apply yamlargs
-        yamlargs = ctx.obj["yamlargs"]
-        Baze._verbose_update(kwargs, yamlargs, "yamlargs")
-
         for cm in [cls._cli_basic, cls._cli_sub, cls._cli]:
             kw = {k: v for k, v in kwargs.items() if k in cm.__annotations__}
             if "ctx" in cm.__annotations__:
@@ -408,16 +398,9 @@ class Baze(Spider):
     def cli_app(cls) -> typer.Typer:
         """Permits conveniently running typer.testing.CliRunner().invoke in spider test
         modules by providing its first argument, the typer app object."""
-        app = typer.Typer(invoke_without_command=True)
 
-        # create a wrapper function so that we can give it a __signature__
-        # (not possible to set __signature__ on a classmethod)
-        def func(**kwargs):
-            cls._cli_full(**kwargs)
-
-        edit_signature(func, [cls._cli_basic, cls._cli_sub, cls._cli])
-        # define helpstring here rather than as func docstring
-        # to protect it from docformatter
+        # define app and its help string here
+        # don't use than as docstring of 'func' this protects it from docformatter
         helpstr = f"""
         CLI interface to {cls.__name__}.main (buffed version of 'scrapy crawl' CLI)\n
         Supports the following:\n
@@ -425,16 +408,22 @@ class Baze(Spider):
         2) Using --arg/-a and --set/-s options similarly to 'scrapy crawl'\n
         3) Spider-specific arguments that offer help, validation, and default values\n.
         """
-        app.command(name=cls._cli_cmdname(), help=helpstr)(func)
-        return app
+        app = typer.Typer(
+            name=cls._cli_cmdname(), help=helpstr, invoke_without_command=True
+        )
 
-    @classmethod
-    def cli_run(cls) -> None:
-        """Permits convenienty runnning cls.main from spider subclass modules via
-        Subclass.cli(); no the need to import typer and use typer.run(subclass.main)."""
-        app = cls.cli_app()
-        app = app_with_yaml_support(app, keys=[cls._cli_cmdname()])
-        app()
+        # create a wrapper function so that we can give it a __signature__
+        # (not possible to set __signature__ on a classmethod)
+        def func(**kwargs) -> None:
+            cls._cli_full(**kwargs)
+
+        # assign to new variable so that typer sees the (edited) signature correctly
+        sig_funcs = [cls._cli_full, cls._cli_basic, cls._cli_sub, cls._cli]
+        newfunc = edit_function_signature(func, sig_funcs, no_variadic=True)
+
+        # apply combined command and return the app
+        app.command(name=cls._cli_cmdname(), help=cls.__doc__)(newfunc)
+        return app
 
     @classmethod
     def get_samples(cls):
@@ -601,4 +590,4 @@ class ShopSrc(BazeSrc):
 
 
 if __name__ == "__main__":
-    ShopSrc.cli_run()
+    app_with_yaml_support(ShopSrc.cli_app())()

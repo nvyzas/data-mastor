@@ -1,8 +1,10 @@
 import argparse
 import importlib
+import json
 import os
 import re
 import shutil
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from types import ModuleType
@@ -96,7 +98,7 @@ def _restore_backup(
     print(f"Restored database from previous backup: {backup_filepath.absolute()}")
 
 
-def _try_safely(func, ctx: typer.Context) -> None:
+def _try_safely(func: Callable, ctx: typer.Context) -> None:
     db_filepath = ctx.obj["db_filepath"]
     backup = ctx.params["backup"]
     write_db = ctx.params["write_db"]
@@ -105,7 +107,7 @@ def _try_safely(func, ctx: typer.Context) -> None:
 
     backup_filepath = _create_backup(db_filepath) if backup else None
 
-    print(f"Running {func.__name__}")
+    print(f"Running safely: {func.__name__}")
     try:
         func()
     except Exception as exc:
@@ -139,10 +141,12 @@ def callback(ctx: typer.Context):
 def recreate(ctx: typer.Context, backup=True, write_db=False):
     engine = ctx.obj["engine"]
 
+    basecls = _get_declarative_base_class()
+
     def _recreate():
         print("Recreating")
-        # Base.metadata.drop_all(engine)
-        # Base.metadata.create_all(engine)
+        basecls.metadata.drop_all(engine)
+        basecls.metadata.create_all(engine)
 
     _try_safely(_recreate, ctx)
 
@@ -184,7 +188,12 @@ def diff(ctx: typer.Context, echo=True):
 
 
 @app.command()
-def migrate(ctx: typer.Context, backup=True, write_db=False):
+def migrate(
+    ctx: typer.Context,
+    backup=True,
+    write_db=False,
+    renames_str: str | None = None,
+):
     """Helper for database migration/creation.
 
     Useful for databases with limited migration capabilities e.g., sqlite.\n
@@ -200,13 +209,6 @@ def migrate(ctx: typer.Context, backup=True, write_db=False):
     For other kinds of operations:\n
     https://alembic.sqlalchemy.org/en/latest/autogenerate.html
     """
-    # parse args
-    args = get_yamldict_key(yamlargs_path, "db")
-    renames = args.get("renames", {}) or {}
-    dont_store = args.get("dont_store", True) or True
-    args_dict = {"renames": renames, "dont_store": dont_store}
-    print(f"Args: {args_dict}")
-
     # get engine
     engine = ctx.obj["engine"]
 
@@ -214,9 +216,12 @@ def migrate(ctx: typer.Context, backup=True, write_db=False):
     db_md, src_md, diffs = diff(ctx, echo=False)
 
     # determine removed tables/columns
+    renames: dict[str, dict[str, str]] = {}
+    if renames_str is not None:
+        renames = json.loads(renames_str)
     removed_tables = set()
     removed_columns: dict[str, Any] = {}
-    for item in diffs["dictionary_item_removed"]:
+    for item in diffs.get("dictionary_item_removed", []):
         parts = re.findall(r"\[(.*?)\]", item)
         if len(parts) == 1:
             table = parts[0].replace("'", "")
