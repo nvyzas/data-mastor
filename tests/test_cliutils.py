@@ -26,7 +26,11 @@ def _different(collection: Collection):
 mocks: dict[str | int, Callable] = {}
 
 
-def f(id_: int | str | None = None) -> Callable:
+def f(
+    id_: int | str | None = None,
+    func: Callable | None = None,
+    sigfunc: Callable | None = None,
+) -> Callable:
     """Function Factory (using mocks)"""
     if id_ is None:
         id_ = _different(mocks)
@@ -48,12 +52,17 @@ def f(id_: int | str | None = None) -> Callable:
     # mock.__annotations__ = inspect.get_annotations(_printer)
     mocks[id_] = mock
 
-    def _callmock(a: int, b: str | None = None):
+    def _callmock(**kwargs):
         print(id_)
         mock()
+        if func is not None:
+            print(f"Running func {func}")
+            func(**kwargs)
         return id_
 
     _callmock.__name__ = name
+    sigfrom = sigfunc if sigfunc else func if func else _callmock
+    _callmock.__signature__ = inspect.signature(sigfrom)
 
     return _callmock
 
@@ -219,9 +228,30 @@ def _check(result: Result):
     assert result.exit_code == 0
 
 
+yamlapp = app_with_yaml_support
+
+
+def _invoke(ctx: Context, cmd: Callable):
+    ctx.invoke(cmd)
+
+
+def invoke(ctx: Context):
+    pass
+
+
+t(id_="lvl1", cmds=f("cmd1"))
+t(id_="lvl1i", cmds=f("cmd1i", func=_invoke, sigfunc=invoke))
+
+
 class Test_yaml_app:
-    def test_simple1(self):
-        r = CliRunner().invoke(
-            app_with_yaml_support(t(id_="testt", cmds=f("testf"))), "--yaml"
-        )
+    def test_yamlapp(self):
+        app = yamlapp(t("lvl1"))
+        assert app.registered_callback is not None
+
+    # def test_simple1(self):
+    #     r = CliRunner().invoke(, "--help")
+    #     _check(r)
+
+    def test_invoke(self):
+        r = CliRunner().invoke(t("lvl1i"), "--help")
         _check(r)

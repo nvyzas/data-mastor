@@ -1,5 +1,7 @@
 import argparse
+import os
 from collections.abc import Callable, Sequence
+from functools import partial
 from inspect import Parameter, Signature, signature
 from pathlib import Path
 from typing import Annotated, Any, cast
@@ -277,97 +279,97 @@ def update_kwargs_from_context(
 ARGS_YAMLPATH = "args.yml"
 
 
-def yaml_app(app: Typer, keys: list[str] | str | None = None) -> Typer:
-    def parse_yamlargs(ctx: Context, yamlpath: Path = Path(ARGS_YAMLPATH)):
-        keys_ = keys
-        if keys_ is not None:
-            print("Using keys given as explicit argument value")
-        elif app.info.name:
-            print(f"Using app name ({app.info.name}) as top-level key")
-            keys_ = app.info.name
-        else:
-            # TODO use module name as a fallback
-            raise ValueError("App has no name")
-        all_keys, yamlargs = yaml_nested_dict_get(yamlpath, keys=keys_)
-        print(f"Yaml args from {yamlpath.absolute()} at {all_keys}:")
+def app_with_yaml_support(app: Typer) -> Typer:
+    def parse_yamlargs(
+        ctx: Context,
+        yamlpath: Path = Path(ARGS_YAMLPATH),
+        yamlkeys: list[str] | None = None,
+        yaml: bool = True,
+    ) -> None:
+        if not yaml:
+            print("Skipping yaml support")
+            return
+        keys = yamlkeys
+        if yamlkeys is None:
+            if app.info.name:
+                print(f"Using app name ({app.info.name}) as top-level yaml key")
+                keys = [app.info.name]
+            else:
+                # TODO use module name as a fallback
+                raise ValueError("App has no name to infer yaml key from")
+
+        # get yamlargs
+        do_trace = True if yamlkeys is None else False
+        all_keys, yamlargs = yaml_nested_dict_get(
+            yamlpath, keys=keys, trace_unknown_keys=do_trace
+        )
+        print(f"Args from {yamlpath.absolute()} under {all_keys}:")
         print(yamlargs)
         if not isinstance(yamlargs, dict):
-            print("WARNING: yamlargs is not a dict. Assuming an empty dict instead.")
+            print("WARNING: args from yaml is not a dict. Assuming an empty dict")
             yamlargs = {}
 
-        # determine commands to execute
+        updated_kwargs = update_kwargs_from_context(yamlargs, ctx)
+        ctx.obj = yamlargs
+        if ctx.invoked_subcommand:
+            print(f"parse_yamlargs: to be invoked: {ctx.invoked_subcommand}")
+            return
+
+        # get combined command
         cmd_names = list(map(lambda s: s.replace("!", ""), all_keys[1:]))
         funcs = app_funcs_from_keys(app, cmd_names)
-
-        def update_yamlargs(ctx: Context):
-            # preparser_args = [_ for _ in ctx.args if _ in ["--yaml", "--yamlpath"]]
-            # if preparser_args:
-            #     print(f"Preparser args: {ctx.args}")
-            return update_kwargs_from_context(yamlargs, ctx)
-
         combined = combine_funcs(funcs)
-        updated_kwargs = update_kwargs_from_context(yamlargs, ctx)
-        if not ctx.invoked_subcommand:
-            print("Invoking combined")
-            updated_kwargs["ctx"] = ctx
-            ctx.invoke(combined, **updated_kwargs)
+
+        # call combined command with updated args
+        ctx.invoked_subcommand = combined.__name__
+        updated_kwargs["ctx"] = ctx
+        ctx.invoke(combined, **updated_kwargs)
+
+    # add_kwarg_updater_callbacks
+    def updater(ctx: Context, funcs_dict: dict[str, Callable] | None = None):
+        print("Running updater")
+        if funcs_dict is None:
+            raise ValueError
+        if ctx.invoked_subcommand:
+            print(f"To be invoked: {ctx.invoked_subcommand}")
+            # ctx.invoke(funcs_dict[ctx.invoked_subcommand], **ctx.obj)
+
+    def add_kwarg_updater_callbacks(tpr: Typer) -> None:
+        print(f"Editing callbacks of {tpr}")
+        cmds = [_ for _ in tpr.registered_commands if _.callback is not None]
+        funcs = [_.callback for _ in cmds if _.callback is not None]
+        names = [_.__name__ for _ in funcs]
+        funcs_dict = dict(zip(names, funcs))
+        pf = partial(updater, funcs_dict=funcs_dict)
+
+        def upd(ctx: Context):
+            pf(ctx)
+
+        upd.__name__ = tpr.info.name if tpr.info.name else "updater"
+
+        if tpr.registered_callback and tpr.registered_callback.callback:
+            print(f"{tpr} already has callback")
+            f = combine_funcs([upd, tpr.registered_callback.callback])
+            app.callback(invoke_without_command=True)(f)
         else:
-            print(f"Invoked subcommand: {ctx.invoked_subcommand}")
+            print(f"{tpr} has no callback`")
+            tpr.callback()(upd)
 
-    # return the new app
-    # newapp = Typer(
-    #     context_settings={"allow_extra_args": True, "ignore_unknown_options": True}
-    # )
-    app.callback(invoke_without_command=True)(parse_yamlargs)
+        for grp in tpr.registered_groups:
+            subtpr = grp.typer_instance
+            if not subtpr:
+                continue
+            add_kwarg_updater_callbacks(subtpr)
+
+    add_kwarg_updater_callbacks(app)
+
+    # prepend yaml parser callback
+    funcs: list[Callable] = [parse_yamlargs]
+    if app.registered_callback and app.registered_callback.callback:
+        funcs.append(app.registered_callback.callback)
+    yamlparsing_callback = combine_funcs(funcs)
+    app.callback(invoke_without_command=True)(yamlparsing_callback)
     return app
-
-
-def app_with_yaml_support(app: Typer, keys: list[str] | str | None = None) -> Typer:
-    # use yaml only if no args were provided in the cmdline
-    parser = argparse.ArgumentParser(add_help=False, exit_on_error=False)
-    parser.add_argument("--yaml", action="store_true", default=False)
-    parser.add_argument("--yamlpath", type=str, default=ARGS_YAMLPATH)
-    # FIX skip mistype suggestions (added in Python 3.14)
-    args, unknown = parser.parse_known_args()
-    if not args.yaml:
-        return app
-
-    # read args from yaml
-    print("Running app with YAML support")
-    yamlpath = Path(args.yamlpath)
-    if keys is not None:
-        print("Using keys given as explicit argument value")
-    elif app.info.name:
-        print(f"Using app name ({app.info.name}) as top-level key")
-        keys = app.info.name
-    else:
-        # TODO use module name as a fallback
-        raise ValueError("App has no name")
-    all_keys, yamlargs = yaml_nested_dict_get(yamlpath, keys=keys)
-    print(f"Yaml args from {yamlpath.absolute()} at {all_keys}:")
-    print(yamlargs)
-    if not isinstance(yamlargs, dict):
-        print("WARNING: yamlargs is not a dict. Assuming an empty dict instead.")
-        yamlargs = {}
-
-    # assimilate callbacks/callback from the app(s) into a single command
-    cmd_names = list(map(lambda s: s.replace("!", ""), all_keys[1:]))
-    funcs = app_funcs_from_keys(app, cmd_names)
-
-    def parse_yamlargs(ctx: Context):
-        preparser_args = [_ for _ in ctx.args if _ in ["--yaml", "--yamlpath"]]
-        if preparser_args:
-            print(f"Preparser args: {ctx.args}")
-        return update_kwargs_from_context(yamlargs, ctx)
-
-    combined = combine_funcs(funcs, kwargs_updater=parse_yamlargs)
-
-    # return the new app
-    newapp = Typer(
-        context_settings={"allow_extra_args": True, "ignore_unknown_options": True}
-    )
-    newapp.command()(combined)
-    return newapp
 
 
 Opt = Option
@@ -385,24 +387,39 @@ def opt(
 app = Typer(name="cliutils")
 
 
-@app.command(
-    context_settings={"allow_extra_args": True, "ignore_unknown_options": True}
-)
-def test(ctx: Context, a=5, b="asvd"):
-    print(f"Running test-cli with {ctx}")
-    print(ctx.params)
-
-
 subapp = Typer(name="subapp")
 
 
 @subapp.command()
 def subtest(ctx: Context, a=2, c=7):
-    print(f"Running subtest-cli with: {ctx}")
+    print()
+    print(f"Running subtest cmd with: {ctx}")
+    print(ctx.parent)
     print(ctx.params)
+    print(f"Invoked: {ctx.invoked_subcommand}")
 
 
 app.add_typer(subapp)
 
+
+@app.callback()
+def testcb(ctx: Context, z=8):
+    print()
+    print(f"Running test callback with {ctx}")
+    print(ctx.params)
+    print(f"Invoked: {ctx.invoked_subcommand}")
+    ctx.invoke(subtest, ctx)
+
+
+@app.command()
+def test(ctx: Context, a=5, b="asvd"):
+    print()
+    print(f"Running test cmd with {ctx}")
+    print(ctx.params)
+    print(f"Invoked: {ctx.invoked_subcommand}")
+    ctx.invoke(subtest, ctx)
+
+
 if __name__ == "__main__":
-    yaml_app(app)()
+    app_with_yaml_support(app)()
+    # app()
