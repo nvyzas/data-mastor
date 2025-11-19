@@ -290,8 +290,10 @@ class Baze(Spider):
     ) -> None:
         # update _test_cli
         cls._test_cli = test_cli
+
         # define helper variable type
         dct: dict[str, Any]
+
         # apply 'scrapy crawl' CLI settings
         dct = {}
         for s in crawlsetts or []:
@@ -337,6 +339,7 @@ class Baze(Spider):
             [kwargs.pop(k) for k in kw if k != "ctx"]
         kwargs.pop("ctx", None)
 
+        # NEXT read unspecified settings from ctx.args
         # apply remaining settings (non class-specified that are coming from yaml)
         dct = {k: v for k, v in kwargs.items() if k.isupper()}
         Baze._verbose_update(cls._settings, dct, "unspecified setting", False)

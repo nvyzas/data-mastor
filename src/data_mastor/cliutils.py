@@ -51,35 +51,35 @@ def yaml_nested_dict_get(
             raise exc
         elif debug:
             print(exc)
-            return [str(yamlpath)], {}
+            return [], {}
         else:
-            return [str(yamlpath)], {}
+            return [], {}
 
     with open(yamlpath) as file:
         yamlpart = yaml.safe_load(file)
     if keys is None:
-        return [str(yamlpath)], yamlpart
+        return [], yamlpart
     if isinstance(keys, str):
         keys = [keys]
-    for key in keys:
+    for i, key in enumerate(keys):
         if not isinstance(yamlpart, dict):
-            exc = TypeError(f"Yamlpart before key '{key}' is not a dictionary")
+            exc = TypeError(f"Yaml element at '{keys[:i]}' is not a dictionary")
             if doraise:
                 raise exc
             elif debug:
                 print(exc)
-                return [str(yamlpath)], yamlpart
+                return keys[:i], yamlpart
             else:
-                return [str(yamlpath)], yamlpart
+                return keys[:i], yamlpart
         if key not in yamlpart.keys():
-            exc = KeyError(f"Key '{key}' was not found in yaml dict")
+            exc = KeyError(f"Key '{key}' was not found in yaml dict at '{keys[:i]}'")
             if doraise:
                 raise exc
             elif debug:
                 print(exc)
-                return [str(yamlpath)], yamlpart
+                return keys[:i], yamlpart
             else:
-                return [str(yamlpath)], yamlpart
+                return keys[:i], yamlpart
         yamlpart = yamlpart[key]
     if trace_unknown_keys:
         unknown_keys = []
@@ -94,7 +94,7 @@ def yaml_nested_dict_get(
             unknown_keys.append(marked_keys[0])
             yamlpart = yamlpart[unknown_keys[-1]]
         keys += unknown_keys
-    return [str(yamlpath)] + keys, yamlpart
+    return keys, yamlpart
 
 
 def app_funcs_from_keys(app: Typer, keys: list[str] | str | None = None):
@@ -191,7 +191,8 @@ def edit_function_signature(
         ]
         for k in to_del:
             del params[k]
-        print(f"Removed variadic signature elements: {to_del}")
+        if to_del:
+            print(f"Removed variadic signature elements: {to_del}")
 
     # sort parameters by kind
     order = {
@@ -224,92 +225,147 @@ def combine_funcs(
         raise ValueError(f"Sequence of functions argument seems empty ({funcs})")
 
     def combined(**kwargs):
+        print("\nCombined: start")
         if kwargs_updater is not None:
             params = signature(kwargs_updater).parameters
             kw = {k: v for k, v in kwargs.items() if k in params}
-            print(f"\nCombined: calling '{kwargs_updater.__name__}' with: {kw}")
+            print(f"Combined: calling '{kwargs_updater.__name__}' with: {kw}")
             updates = kwargs_updater(**kw)
             kwargs.update(updates)
         for f in funcs:
             params = signature(f).parameters
             kw = {k: v for k, v in kwargs.items() if k in params}
-            print(f"\nCombined: calling '{f.__name__}' with: {kw}")
+            print(f"Combined: calling '{f.__name__}' with: {kw}")
             f(**kw)
+        print("Combined: end\n")
 
     updater = [kwargs_updater] if kwargs_updater else []
     edit_function_signature(combined, [*updater, *funcs], no_variadic=True)
     return combined
 
 
-def yamlargs_from_params(
-    yamlargs: dict[str, Any], ctx: Context, edit_ctx_values=True
+def update_kwargs_from_context(
+    args: dict[str, Any], ctx: Context, edit_ctx=True
 ) -> dict[str, Any]:
-    updated_yamlargs = {}
-    for k, v in yamlargs.items():
+    updated_kwargs = {}
+    for k, v in args.items():
         if k not in ctx.params:
-            print(f"Using yaml arg {k}={v} (unspecified arg)")
-            updated_yamlargs[k] = v
+            print(f"Using arg {k}={v} (unspecified)")
+            updated_kwargs[k] = v
             continue
         val = ctx.params[k]
         src = ctx.get_parameter_source(k)
         if src == ParameterSource.COMMANDLINE:
-            print(f"Ignoring yaml arg {k}={v} (overriden by cmdline value: {val})")
+            print(f"Ignoring arg {k}={v} (overriden by value from cmdline: {val})")
             continue
         if v != val:
-            print(f"Using yaml arg {k}={v} (ctx value from {src}: {val})")
+            print(f"Using arg {k}={v} (instead of value from {src}: {val})")
         else:
-            print(f"Using yaml arg {k}={v} (same as ctx value from {src})")
-        # treat yaml arg as coming from the cmdline
-        ctx.set_parameter_source(k, ParameterSource.COMMANDLINE)
-        updated_yamlargs[k] = v
+            print(f"Using arg {k}={v} (same as ctx value from {src})")
+        if edit_ctx:
+            # treat the arg as if it came from the cmdline
+            ctx.set_parameter_source(k, ParameterSource.COMMANDLINE)
+        updated_kwargs[k] = v
 
-    if edit_ctx_values:
-        for k, v in updated_yamlargs.items():
+    if edit_ctx:
+        # update value in context
+        for k, v in updated_kwargs.items():
             ctx.params[k] = v
-    return updated_yamlargs
+    return updated_kwargs
 
 
-ARGS_FILENAME = "args.yml"
+ARGS_YAMLPATH = "args.yml"
+
+
+def yaml_app(app: Typer, keys: list[str] | str | None = None) -> Typer:
+    def parse_yamlargs(ctx: Context, yamlpath: Path = Path(ARGS_YAMLPATH)):
+        keys_ = keys
+        if keys_ is not None:
+            print("Using keys given as explicit argument value")
+        elif app.info.name:
+            print(f"Using app name ({app.info.name}) as top-level key")
+            keys_ = app.info.name
+        else:
+            # TODO use module name as a fallback
+            raise ValueError("App has no name")
+        all_keys, yamlargs = yaml_nested_dict_get(yamlpath, keys=keys_)
+        print(f"Yaml args from {yamlpath.absolute()} at {all_keys}:")
+        print(yamlargs)
+        if not isinstance(yamlargs, dict):
+            print("WARNING: yamlargs is not a dict. Assuming an empty dict instead.")
+            yamlargs = {}
+
+        # determine commands to execute
+        cmd_names = list(map(lambda s: s.replace("!", ""), all_keys[1:]))
+        funcs = app_funcs_from_keys(app, cmd_names)
+
+        def update_yamlargs(ctx: Context):
+            # preparser_args = [_ for _ in ctx.args if _ in ["--yaml", "--yamlpath"]]
+            # if preparser_args:
+            #     print(f"Preparser args: {ctx.args}")
+            return update_kwargs_from_context(yamlargs, ctx)
+
+        combined = combine_funcs(funcs)
+        updated_kwargs = update_kwargs_from_context(yamlargs, ctx)
+        if not ctx.invoked_subcommand:
+            print("Invoking combined")
+            updated_kwargs["ctx"] = ctx
+            ctx.invoke(combined, **updated_kwargs)
+        else:
+            print(f"Invoked subcommand: {ctx.invoked_subcommand}")
+
+    # return the new app
+    # newapp = Typer(
+    #     context_settings={"allow_extra_args": True, "ignore_unknown_options": True}
+    # )
+    app.callback(invoke_without_command=True)(parse_yamlargs)
+    return app
 
 
 def app_with_yaml_support(app: Typer, keys: list[str] | str | None = None) -> Typer:
     # use yaml only if no args were provided in the cmdline
-    parser = argparse.ArgumentParser(add_help=False)
-    # parser.add_argument("--yamlargs", type=str, help="path to a YAML file with args")
-    known, unknown = parser.parse_known_args()
-    print(known)
-    print(unknown)
-    if unknown:
+    parser = argparse.ArgumentParser(add_help=False, exit_on_error=False)
+    parser.add_argument("--yaml", action="store_true", default=False)
+    parser.add_argument("--yamlpath", type=str, default=ARGS_YAMLPATH)
+    # FIX skip mistype suggestions (added in Python 3.14)
+    args, unknown = parser.parse_known_args()
+    if not args.yaml:
         return app
 
     # read args from yaml
-    print("Running app with YAML support since no args were provided")
-    yamlpath = Path(ARGS_FILENAME)
-    if keys is None:
-        if app.info.name:
-            print(f"Using app name ({app.info.name}) as top-level key")
-            keys = app.info.name
-        else:
-            # TODO use module name as a fallback
-            raise ValueError("App has no name")
+    print("Running app with YAML support")
+    yamlpath = Path(args.yamlpath)
+    if keys is not None:
+        print("Using keys given as explicit argument value")
+    elif app.info.name:
+        print(f"Using app name ({app.info.name}) as top-level key")
+        keys = app.info.name
+    else:
+        # TODO use module name as a fallback
+        raise ValueError("App has no name")
     all_keys, yamlargs = yaml_nested_dict_get(yamlpath, keys=keys)
-    print(f"Yamlargs from {all_keys}:")
+    print(f"Yaml args from {yamlpath.absolute()} at {all_keys}:")
     print(yamlargs)
     if not isinstance(yamlargs, dict):
         print("WARNING: yamlargs is not a dict. Assuming an empty dict instead.")
         yamlargs = {}
 
     # assimilate callbacks/callback from the app(s) into a single command
-    cmd_names = list(map(lambda s: s.replace("!", ""), all_keys[2:]))
+    cmd_names = list(map(lambda s: s.replace("!", ""), all_keys[1:]))
     funcs = app_funcs_from_keys(app, cmd_names)
 
     def parse_yamlargs(ctx: Context):
-        return yamlargs_from_params(yamlargs, ctx)
+        preparser_args = [_ for _ in ctx.args if _ in ["--yaml", "--yamlpath"]]
+        if preparser_args:
+            print(f"Preparser args: {ctx.args}")
+        return update_kwargs_from_context(yamlargs, ctx)
 
     combined = combine_funcs(funcs, kwargs_updater=parse_yamlargs)
 
     # return the new app
-    newapp = Typer()
+    newapp = Typer(
+        context_settings={"allow_extra_args": True, "ignore_unknown_options": True}
+    )
     newapp.command()(combined)
     return newapp
 
@@ -324,3 +380,29 @@ def opt(
     if isinstance(names, str):
         names = [names]
     return Annotated[dtype, Option(*names, help=help, rich_help_panel=panel, **kwargs)]
+
+
+app = Typer(name="cliutils")
+
+
+@app.command(
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True}
+)
+def test(ctx: Context, a=5, b="asvd"):
+    print(f"Running test-cli with {ctx}")
+    print(ctx.params)
+
+
+subapp = Typer(name="subapp")
+
+
+@subapp.command()
+def subtest(ctx: Context, a=2, c=7):
+    print(f"Running subtest-cli with: {ctx}")
+    print(ctx.params)
+
+
+app.add_typer(subapp)
+
+if __name__ == "__main__":
+    yaml_app(app)()

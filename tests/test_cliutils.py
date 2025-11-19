@@ -13,73 +13,7 @@ from rich import print
 from typer import Context, Typer
 from typer.testing import CliRunner
 
-from data_mastor.cliutils import app_funcs_from_keys
-
-calls = []
-
-
-def add(name):
-    calls.append(name)
-
-
-def cb0(ctx: Context):
-    print("Callback 0")
-    add(0)
-
-
-def cb1(ctx: Context):
-    print("Callback 1")
-    add(1)
-
-
-def _printresult(result: Result):
-    if result.output:
-        print("output:")
-        print(result.output)
-    print("ret:", result.return_value)
-    print("exc:", {result.exception})
-
-
-def check(value):
-    assert calls == value
-    calls.clear()
-
-
-def cmd0(s):
-    print("Cmd0", s)
-
-
-def cmd1(s):
-    print("Cmd1", s)
-
-
-@pytest.fixture
-def app0() -> Typer:
-    app0 = Typer(name="zero", invoke_without_command=True)
-    return app0
-
-
-@pytest.fixture
-def app1() -> Typer:
-    app1 = Typer(name="one", invoke_without_command=True)
-    return app1
-
-
-def test_auto_invoke(app0: Typer, app1: Typer) -> None:
-    print()
-    check([])
-    # app0 auto-invoke
-    app0.callback()(cb0)
-    result = CliRunner().invoke(app0)
-    _printresult(result)
-    check([0])
-    # app01
-    app1.callback()(cb1)
-    app0.add_typer(app1)
-    # app01 auto-invoke
-    result = CliRunner().invoke(app1, "one")
-    _printresult(result)
-    check([0, 1])
+from data_mastor.cliutils import app_funcs_from_keys, app_with_yaml_support
 
 
 def _different(collection: Collection):
@@ -99,13 +33,29 @@ def f(id_: int | str | None = None) -> Callable:
     elif (mock := mocks.get(id_)) is not None:
         return mock
 
-    def _printer() -> None:
-        print(id_)
-
     name = str(id_)
-    mock = MagicMock(return_value=id_, side_effect=_printer, name=name, __name__=name)
+
+    mock = MagicMock(
+        # return_value=id_,
+        # side_effect=_printer,
+        # spec_set=_printer,
+        # spec=_printer,
+        # wraps=_printer,
+        # name=name,
+        # __name__=name,
+    )
+    # mock.__name__ = name
+    # mock.__annotations__ = inspect.get_annotations(_printer)
     mocks[id_] = mock
-    return mock
+
+    def _callmock(a: int, b: str | None = None):
+        print(id_)
+        mock()
+        return id_
+
+    _callmock.__name__ = name
+
+    return _callmock
 
 
 def maketyper(
@@ -264,51 +214,14 @@ class Test_app_funcs_from_keys:
         _assert_result(ret, app_funcs_from_keys, app, keys=keys)
 
 
-def assimilate(megafunc):
-    def outer(newfunc):
-        mega_params = signature(megafunc).parameters
-        new_params = signature(newfunc).parameters
-
-        def inner(**kwargs):
-            kw = {k: v for k, v in kwargs.items() if k in mega_params}
-            print(f"Calling megafunc {megafunc.__name__} with: {kw}")
-            megafunc(**kw)
-            kw = {k: v for k, v in kwargs.items() if k in new_params}
-            print(f"Calling newfunc {newfunc.__name__} with: {kw}")
-            newfunc(**kw)
-
-        inner.__name__ = megafunc.__name__ + "__" + newfunc.__name__
-        inner.__signature__ = Signature(list((mega_params | new_params).values()))  # type: ignore
-        inner.__annotations__ = get_annotations(megafunc) | get_annotations(newfunc)
-        return inner
-
-    return outer
+def _check(result: Result):
+    print(result.output)
+    assert result.exit_code == 0
 
 
-def f0(a=1, b=2, c=3):
-    print(f"f: {a},{b},{c}")
-
-
-def f1(b=4, c=5, d=6):
-    print(f"f1: {b},{c},{d}")
-
-
-def f2(e=7):
-    print(f"f2: {e}")
-
-
-into_f = assimilate(f0)
-
-
-def test_assimilate():
-    print()
-
-    z1 = assimilate(f0)(f1)
-    print(z1.__name__, inspect.signature(z1))
-    z1(a=11, b=22, c=33, d=44)
-    print()
-
-    z2 = assimilate(z1)(f2)
-    print(z2.__name__, inspect.signature(z2))
-    z2(a=11, b=22, c=33, d=44, e=55)
-    print()
+class Test_yaml_app:
+    def test_simple1(self):
+        r = CliRunner().invoke(
+            app_with_yaml_support(t(id_="testt", cmds=f("testf"))), "--yaml"
+        )
+        _check(r)
