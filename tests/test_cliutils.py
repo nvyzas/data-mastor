@@ -13,7 +13,7 @@ from rich import print
 from typer import Context, Typer
 from typer.testing import CliRunner
 
-from data_mastor.cliutils import app_funcs_from_keys, app_with_yaml_support
+from data_mastor.cliutils import Tf, app_funcs_from_keys, app_with_yaml_support
 from data_mastor.utils import _different
 
 t = Tf()

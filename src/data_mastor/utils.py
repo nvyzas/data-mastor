@@ -5,17 +5,27 @@ from typing import Any, cast
 from unittest.mock import MagicMock
 
 
+def sigpart(func: Callable, *picked: str):
+    sig = signature(func)
+    if len(picked) == 0:
+        return sig
+    picked_params = {k: v for k, v in sig.parameters.items() if k in picked}
+    return Signature(list(picked_params.values()))
+
+
 def replace_function_signature(
     func: Callable,
-    other_functions: list[Callable],
+    other: Callable | Signature | Sequence[Callable | Signature],
     no_variadic=False,
     edit_annotations=True,
     edit_name=False,
 ) -> Callable[..., Any]:
     # get parameters
     params: dict[str, Parameter] = {}
-    for f in other_functions:
-        sig = signature(cast(Callable[..., Any], f))
+    if isinstance(other, (Callable, Signature)):
+        other = [other]
+    for o in other:
+        sig = o if isinstance(o, Signature) else signature(o)
         params.update(sig.parameters)
 
     # remove variadic
@@ -46,7 +56,9 @@ def replace_function_signature(
 
     # edit name
     if edit_name:
-        func.__name__ = "__".join([_.__name__ for _ in other_functions])
+        func.__name__ = "__".join(
+            ["sig" if isinstance(o, Signature) else o.__name__ for o in other]
+        )
     return func
 
 
@@ -93,7 +105,7 @@ mocks: dict[str | int, Callable] = {}
 def mock_function_factory(
     id_: int | str | None = None,
     func: Callable | None = None,
-    sigfunc: Callable | None = None,
+    funcsig: Callable | Signature | None = None,
     **mock_kwargs,
 ) -> Callable:
     """Function Factory (using mocks)"""
@@ -115,7 +127,7 @@ def mock_function_factory(
         return id_
 
     _f.__name__ = name
-    sigfrom = sigfunc if sigfunc else func if func else _f
-    replace_function_signature(_f, [sigfrom])
+    funcsig = funcsig if funcsig else func if func else _f
+    replace_function_signature(_f, [funcsig])
 
     return _f

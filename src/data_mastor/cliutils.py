@@ -18,15 +18,16 @@ from data_mastor.utils import (
     combine_funcs,
     mock_function_factory,
     replace_function_signature,
+    sigpart,
 )
 
 
-def maketyper(
+def make_typer(
     name: str | None = None,
     cb: Callable | None = None,
     cmds: list[Callable] | Callable | None = None,
     tprs: list[Typer] | Typer | None = None,
-):
+) -> Typer:
     app = Typer(name=name)
     if cb is not None:
         app.callback()(cb)
@@ -41,6 +42,36 @@ def maketyper(
         for tpr in tprs:
             app.add_typer(tpr)
     return app
+
+
+def traverse_typer(
+    tpr: Typer,
+    grp: TyperInfo | None = None,
+    lvl: int = 0,
+    callback_decorator: Callable[[Callable], Callable] | None = None,
+) -> None:
+    tprname = (grp.name if grp else "") or tpr.info.name or f"typer{lvl}"
+    if tpr.registered_callback:
+        if (cb := tpr.registered_callback.callback) is None:
+            raise ValueError(f"{tpr} has a NULL callback")
+        cbname = cb.__name__ or f"cb{lvl}"
+        if callback_decorator is not None:
+            tpr.registered_callback.callback = callback_decorator(cb)
+            print(f"Decorated callback '{cbname}' of '{tprname}'")
+    for i, cmd in enumerate(tpr.registered_commands):
+        if (cb := cmd.callback) is None:
+            raise ValueError(f"'{tprname}' has a NULL command")
+        cbname = cmd.name or cb.__name__ or f"cmd{lvl}-{i}"
+        if callback_decorator is not None:
+            cmd.callback = callback_decorator(cb)
+            print(f"Decorated command callback '{cbname}' of '{tprname}'")
+    for grp in tpr.registered_groups:
+        grpname = grp.name or f"grp{lvl}"
+        if grp.typer_instance is None:
+            raise ValueError(f"'{tprname}' has a group '{grpname}' with NULL app")
+        traverse_typer(
+            grp.typer_instance, grp, lvl + 1, callback_decorator=callback_decorator
+        )
 
 
 class Tf:
@@ -62,10 +93,10 @@ class Tf:
             id_ = _different(self.apps)
         force_new = self.force_new if force_new is None else force_new
         if force_new:
-            app = maketyper(*args, **kwargs, name=str(id_))
+            app = make_typer(*args, **kwargs, name=str(id_))
             self.apps[id_] = app
             return app
-        return self.apps.setdefault(id_, maketyper(*args, **kwargs, name=str(id_)))
+        return self.apps.setdefault(id_, make_typer(*args, **kwargs, name=str(id_)))
 
 
 # DO replace all uses of this with nested_yaml_dict_get
@@ -231,10 +262,10 @@ def app_funcs_from_keys(app: Typer, keys: list[str] | str | None = None):
 def update_kwargs_from_context(
     kwargs: dict[str, Any],
     ctx: Context,
-    edit_ctx_param_values=False,
-    edit_ctx_param_sources=True,
+    update_ctx=False,
+    inplace=False,
 ) -> dict[str, Any]:
-    updated_kwargs = {}
+    updated_kwargs = kwargs if inplace else {}
     for k, v in kwargs.items():
         if k not in ctx.params:
             print(f"Using arg {k}={v} (unspecified)")
@@ -249,15 +280,12 @@ def update_kwargs_from_context(
             print(f"Using arg {k}={v} (instead of value from {src}: {val})")
         else:
             print(f"Using arg {k}={v} (same as ctx value from {src})")
-        if edit_ctx_param_sources:
+        updated_kwargs[k] = v
+        if update_ctx:
             # treat the arg as if it came from the cmdline
             ctx.set_parameter_source(k, ParameterSource.COMMANDLINE)
-        updated_kwargs[k] = v
-
-    if edit_ctx_param_values:
-        # update value in context
-        for k, v in updated_kwargs.items():
             ctx.params[k] = v
+
     return updated_kwargs
 
 
@@ -334,9 +362,13 @@ def app_with_yaml_support(
         def wrapper(ctx: Context, **kwargs):
             if ctx.invoked_subcommand and ctx.invoked_subcommand not in cmd_names:
                 raise RuntimeError(f"{ctx.invoked_subcommand} is not in {all_keys}")
-            print(f"Meta kwargs: {ctx.meta['updated_kwargs']}")
-            kwargs.update(ctx.meta["updated_kwargs"])
+            # print(f"Meta kwargs: {ctx.meta['updated_kwargs']}")
+            # kwargs.update(ctx.meta["updated_kwargs"])
+            print(f"Running wrapper of {func.__name__}")
+            updated = update_kwargs_from_context(yamlargs, ctx)
+            kwargs.update(updated)
             kwargs["ctx"] = ctx
+
             kw = {k: v for k, v in kwargs.items() if k in signature(func).parameters}
             print(f"Running wrapped {func} with {kw}")
             func(**kw)
@@ -344,14 +376,15 @@ def app_with_yaml_support(
         replace_function_signature(wrapper, [wrapper, func], no_variadic=True)
         return wrapper
 
-    tpr = app
-    print(funcs)
-    for i, f in enumerate(funcs):
-        funcs[i] = with_updated_kwargs(f)
+    # tpr = app
+    # print(funcs)
+    # for i, f in enumerate(funcs):
+    #     funcs[i] = with_updated_kwargs(f)
+    # print(funcs)
+    # app.registered_callback.callback = funcs[0]
+    # app.registered_commands[0].callback = funcs[1]
 
-    print(funcs)
-    app.registered_callback.callback = funcs[0]
-    app.registered_commands[0].callback = funcs[1]
+    traverse_typer(app, callback_decorator=with_updated_kwargs)
 
     def update_kwargs(ctx: Context, **kwargs):
         #     preparser_args = [_ for _ in ctx.args if _ in ["--yaml", "--yamlpath"]]
@@ -361,14 +394,14 @@ def app_with_yaml_support(
 
     # to help update_kwargs_from_context work properly, ctx.args must include all args
     # for this, we use a combined signature from across the whole call chain
-    replace_function_signature(update_kwargs, [update_kwargs] + funcs, no_variadic=True)
+    # replace_function_signature(update_kwargs, [update_kwargs] + funcs, no_variadic=True)
 
     # root callback
-    funcs = [update_kwargs]
-    if app.registered_callback and app.registered_callback.callback:
-        funcs.append(app.registered_callback.callback)
-    root_callback = combine_funcs(funcs)
-    app.callback(invoke_without_command=True)(root_callback)
+    # funcs = [update_kwargs]
+    # if app.registered_callback and app.registered_callback.callback:
+    #     funcs.append(app.registered_callback.callback)
+    # root_callback = combine_funcs(funcs)
+    # app.callback(invoke_without_command=True)(root_callback)
     # newapp = Typer(name=megafunc.__name__, add_completion=False)
     # newapp.command()(megafunc)
     return app
@@ -386,7 +419,7 @@ def opt(
     return Annotated[dtype, Option(*names, help=help, rich_help_panel=panel, **kwargs)]
 
 
-def _print_ctx(ctx: Context):
+def printctx(ctx: Context, **kwargs):
     info = {
         "id": id(ctx),
         "params": ctx.params,
@@ -397,49 +430,24 @@ def _print_ctx(ctx: Context):
     print(info)
 
 
+def sigs(ctx: Context, a=1, b=1, c=1, d=1):
+    pass
+
+
+s = partial(sigpart, sigs, "ctx")
+
 f = mock_function_factory
 # app
 app = Typer(name="cliutils")
-app.callback()(f("root_cb", func=_print_ctx))
+app.callback(invoke_without_command=True)(f("cb1", func=printctx, funcsig=s("a")))
+app.command()(f("cmd1", func=printctx, funcsig=s("a", "b")))
 
 
-@app.callback()
-def testcb(ctx: Context, a=1):
-    _print_ctx(ctx)
-
-
-@app.command()
-def test(ctx: Context, a=2, b=1):
-    _print_ctx(ctx)
-
-
-# # subapp
-# subapp = Typer(name="subapp")
-
-
-# @subapp.command()
-# def subtest(ctx: Context, a=2, c=7):
-#     print(f"Running subtest cmd with: {ctx}")
-#     print(ctx.parent)
-#     print(ctx.params)
-#     print(f"Invoked: {ctx.invoked_subcommand}")
-#     print(ctx.command)
-#     print(ctx.command_path)
-#     print()
-
-
-# @subapp.command()
-# def subtest2(ctx: Context, a=3, c=8):
-#     print(f"Running subtest2 cmd with: {ctx}")
-#     print(ctx.parent)
-#     print(ctx.params)
-#     print(f"Invoked: {ctx.invoked_subcommand}")
-#     print(ctx.command)
-#     print(ctx.command_path)
-#     print()
-
-
-# app.add_typer(subapp)
+# subapp
+subapp = Typer(name="subapp")
+subapp.callback(invoke_without_command=True)(f("cb2", func=printctx, funcsig=s("c")))
+subapp.command()(f("cmd2", func=printctx, funcsig=s("c", "d")))
+app.add_typer(subapp)
 
 
 # # zubapp
@@ -472,4 +480,5 @@ def test(ctx: Context, a=2, b=1):
 
 if __name__ == "__main__":
     app_with_yaml_support(app)()
+    # app()
     # app()
