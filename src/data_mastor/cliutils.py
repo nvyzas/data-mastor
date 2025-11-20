@@ -44,29 +44,32 @@ def make_typer(
     return app
 
 
+# MAYBE remove hardcoded names with lvl (since they are never used)
 def traverse_typer(
     tpr: Typer,
     grp: TyperInfo | None = None,
     lvl: int = 0,
     callback_decorator: Callable[[Callable], Callable] | None = None,
 ) -> None:
-    tprname = (grp.name if grp else "") or tpr.info.name or f"typer{lvl}"
+    _tprname = tpr.info.name or (grp.name if grp and grp.name else tpr.__module__)
+    tprname = f"{_tprname}({lvl})"
     if tpr.registered_callback:
         if (cb := tpr.registered_callback.callback) is None:
             raise ValueError(f"{tpr} has a NULL callback")
-        cbname = cb.__name__ or f"cb{lvl}"
         if callback_decorator is not None:
             tpr.registered_callback.callback = callback_decorator(cb)
-            print(f"Decorated callback '{cbname}' of '{tprname}'")
+            print(f"Decorated callback '{tprname}'")
     for i, cmd in enumerate(tpr.registered_commands):
         if (cb := cmd.callback) is None:
             raise ValueError(f"'{tprname}' has a NULL command")
-        cbname = cmd.name or cb.__name__ or f"cmd{lvl}-{i}"
+        cbname = cmd.name or cb.__name__
+        cbname += f"({lvl})[{i}]"
         if callback_decorator is not None:
             cmd.callback = callback_decorator(cb)
             print(f"Decorated command callback '{cbname}' of '{tprname}'")
-    for grp in tpr.registered_groups:
-        grpname = grp.name or f"grp{lvl}"
+    for i, grp in enumerate(tpr.registered_groups):
+        grpname = grp.name or "grp"
+        grpname += f"({lvl})[{i}]"
         if grp.typer_instance is None:
             raise ValueError(f"'{tprname}' has a group '{grpname}' with NULL app")
         traverse_typer(
@@ -327,36 +330,6 @@ def app_with_yaml_support(
     cmd_names = list(map(lambda s: s.replace("!", ""), all_keys[1:]))
     funcs = app_funcs_from_keys(app, cmd_names)
 
-    # def up_yamlargs(ctx: Context):
-    #     preparser_args = [_ for _ in ctx.args if _ in ["--yaml", "--yamlpath"]]
-    #     if preparser_args:
-    #         print(f"Preparser args: {ctx.args}")
-    #     return update_kwargs_from_context(yamlargs, ctx)
-
-    # combined = combine_funcs(funcs, kwargs_updater=up_yamlargs)
-
-    def _find_callback(
-        callback: str, tpr: Typer, grp: TyperInfo | None = None
-    ) -> Callable[..., Any] | None:
-        if tpr.registered_callback and (cb := tpr.registered_callback.callback):
-            if (
-                (grp and grp.name == callback)
-                or (tpr.info.name == callback)
-                or (cb.__name__ == callback)
-            ):
-                return cb
-        return None
-        raise ValueError(f"Could not find callback {callback} in typer {tpr}")
-
-    def _find_command_callback(callback: str, tpr: Typer) -> Callable[..., Any] | None:
-        for cmd in tpr.registered_commands:
-            if (cb := cmd.callback) is None:
-                continue
-            if cmd.name == callback or cb.__name__ == callback:
-                return cb
-        return None
-        raise ValueError(f"Could not find command callback {callback} in typer {tpr}")
-
     def with_updated_kwargs(func):
         @wraps(func)
         def wrapper(ctx: Context, **kwargs):
@@ -449,36 +422,6 @@ subapp.callback(invoke_without_command=True)(f("cb2", func=printctx, funcsig=s("
 subapp.command()(f("cmd2", func=printctx, funcsig=s("c", "d")))
 app.add_typer(subapp)
 
-
-# # zubapp
-# zubapp = Typer(name="zubapp")
-
-
-# @zubapp.command()
-# def zubtest(ctx: Context, a=2, c=7):
-#     print(f"Running zubtest cmd with: {ctx}")
-#     print(ctx.parent)
-#     print(ctx.params)
-#     print(f"Invoked: {ctx.invoked_subcommand}")
-#     print(ctx.command)
-#     print(ctx.command_path)
-#     print()
-
-
-# @zubapp.command()
-# def zubtest2(ctx: Context, a=3, c=8):
-#     print(f"Running zubtest2 cmd with: {ctx}")
-#     print(ctx.parent)
-#     print(ctx.params)
-#     print(f"Invoked: {ctx.invoked_subcommand}")
-#     print(ctx.command)
-#     print(ctx.command_path)
-#     print()
-
-
-# subapp.add_typer(zubapp)
-
 if __name__ == "__main__":
     app_with_yaml_support(app)()
-    # app()
     # app()
