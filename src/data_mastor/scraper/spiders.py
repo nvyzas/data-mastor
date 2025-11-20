@@ -15,7 +15,7 @@ from scrapy.utils.project import get_project_settings
 from data_mastor.cliutils import (
     Opt,
     app_with_yaml_support,
-    edit_function_signature,
+    replace_function_signature,
     yaml_nested_dict_get,
 )
 from data_mastor.scraper.middlewares import PrivacyCheckerDlMw, ResponseSaverSpMw
@@ -422,7 +422,7 @@ class Baze(Spider):
 
         # assign to new variable so that typer sees the (edited) signature correctly
         sig_funcs = [cls._cli_full, cls._cli_basic, cls._cli_sub, cls._cli]
-        newfunc = edit_function_signature(func, sig_funcs, no_variadic=True)
+        newfunc = replace_function_signature(func, sig_funcs, no_variadic=True)
 
         # apply combined command and return the app
         app.command(name=cls._cli_cmdname(), help=cls.__doc__)(newfunc)

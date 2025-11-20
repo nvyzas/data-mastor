@@ -3,7 +3,7 @@ import random
 from collections.abc import Callable
 from functools import wraps
 from inspect import Signature, get_annotations, signature
-from typing import Any, Collection
+from typing import Any
 from unittest.mock import MagicMock, Mock
 
 import click
@@ -14,105 +14,7 @@ from typer import Context, Typer
 from typer.testing import CliRunner
 
 from data_mastor.cliutils import app_funcs_from_keys, app_with_yaml_support
-
-
-def _different(collection: Collection):
-    while True:
-        i = random.randint(100, 10000)
-        if i not in collection:
-            return i
-
-
-mocks: dict[str | int, Callable] = {}
-
-
-def f(
-    id_: int | str | None = None,
-    func: Callable | None = None,
-    sigfunc: Callable | None = None,
-) -> Callable:
-    """Function Factory (using mocks)"""
-    if id_ is None:
-        id_ = _different(mocks)
-    elif (mock := mocks.get(id_)) is not None:
-        return mock
-
-    name = str(id_)
-
-    mock = MagicMock(
-        # return_value=id_,
-        # side_effect=_printer,
-        # spec_set=_printer,
-        # spec=_printer,
-        # wraps=_printer,
-        # name=name,
-        # __name__=name,
-    )
-    # mock.__name__ = name
-    # mock.__annotations__ = inspect.get_annotations(_printer)
-    mocks[id_] = mock
-
-    def _callmock(**kwargs):
-        print(id_)
-        mock()
-        if func is not None:
-            print(f"Running func {func}")
-            func(**kwargs)
-        return id_
-
-    _callmock.__name__ = name
-    sigfrom = sigfunc if sigfunc else func if func else _callmock
-    _callmock.__signature__ = inspect.signature(sigfrom)
-
-    return _callmock
-
-
-def maketyper(
-    name: str | None = None,
-    cb: Callable | None = None,
-    cmds: list[Callable] | Callable | None = None,
-    tprs: list[Typer] | Typer | None = None,
-):
-    app = Typer(name=name)
-    if cb is not None:
-        app.callback()(cb)
-    if cmds is not None:
-        if isinstance(cmds, Callable):
-            cmds = [cmds]
-        for cmd in cmds:
-            app.command()(cmd)
-    if tprs is not None:
-        if isinstance(tprs, Typer):
-            tprs = [tprs]
-        for tpr in tprs:
-            app.add_typer(tpr)
-    return app
-
-
-class Tf:
-    """(Typer) App Factory"""
-
-    apps: dict[str | int, Typer] = {}
-
-    def __init__(self, force_new: bool = False) -> None:
-        self.force_new = force_new
-
-    def __call__(
-        self,
-        id_: str | int | None = None,
-        force_new: bool | None = None,
-        *args,
-        **kwargs,
-    ) -> Typer:
-        if id_ is None:
-            id_ = _different(self.apps)
-        force_new = self.force_new if force_new is None else force_new
-        if force_new:
-            app = maketyper(*args, **kwargs, name=str(id_))
-            self.apps[id_] = app
-            return app
-        return self.apps.setdefault(id_, maketyper(*args, **kwargs, name=str(id_)))
-
+from data_mastor.utils import _different
 
 t = Tf()
 tn = Tf(force_new=True)

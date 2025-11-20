@@ -1,15 +1,71 @@
 import argparse
 import os
 from collections.abc import Callable, Sequence
-from functools import partial
+from functools import partial, wraps
 from inspect import Parameter, Signature, signature
 from pathlib import Path
 from typing import Annotated, Any, cast
 
 import yaml
+from click import get_current_context
 from click.core import ParameterSource
 from rich import print
 from typer import Context, Option, Typer
+from typer.models import TyperInfo
+
+from data_mastor.utils import (
+    _different,
+    combine_funcs,
+    mock_function_factory,
+    replace_function_signature,
+)
+
+
+def maketyper(
+    name: str | None = None,
+    cb: Callable | None = None,
+    cmds: list[Callable] | Callable | None = None,
+    tprs: list[Typer] | Typer | None = None,
+):
+    app = Typer(name=name)
+    if cb is not None:
+        app.callback()(cb)
+    if cmds is not None:
+        if isinstance(cmds, Callable):
+            cmds = [cmds]
+        for cmd in cmds:
+            app.command()(cmd)
+    if tprs is not None:
+        if isinstance(tprs, Typer):
+            tprs = [tprs]
+        for tpr in tprs:
+            app.add_typer(tpr)
+    return app
+
+
+class Tf:
+    """(Typer) App Factory"""
+
+    apps: dict[str | int, Typer] = {}
+
+    def __init__(self, force_new: bool = False) -> None:
+        self.force_new = force_new
+
+    def __call__(
+        self,
+        id_: str | int | None = None,
+        force_new: bool | None = None,
+        *args,
+        **kwargs,
+    ) -> Typer:
+        if id_ is None:
+            id_ = _different(self.apps)
+        force_new = self.force_new if force_new is None else force_new
+        if force_new:
+            app = maketyper(*args, **kwargs, name=str(id_))
+            self.apps[id_] = app
+            return app
+        return self.apps.setdefault(id_, maketyper(*args, **kwargs, name=str(id_)))
 
 
 # DO replace all uses of this with nested_yaml_dict_get
@@ -133,7 +189,7 @@ def app_funcs_from_keys(app: Typer, keys: list[str] | str | None = None):
             raise ValueError(f"App({i}) has multiple subapps named '{key}'")
         if not key_tprs:
             if i == len(keys) - 1:
-                # the last key is not a group key (it should be a command key)
+                # the last key is not a group name (it must be a command name then)
                 cmdkey = key
                 break
             raise ValueError(f"App({i}) has no subapps named '{key}')")
@@ -172,85 +228,14 @@ def app_funcs_from_keys(app: Typer, keys: list[str] | str | None = None):
     return funcs
 
 
-# NEXT replace with combine_funcs
-def edit_function_signature(
-    func,
-    other_functions: list[Callable],
-    no_variadic=False,
-    edit_annotations=True,
-    edit_name=True,
-):
-    # get parameters
-    params: dict[str, Parameter] = {}
-    for f in other_functions:
-        sig = signature(cast(Callable[..., Any], f))
-        params.update(sig.parameters)
-
-    # remove variadic
-    if no_variadic:
-        to_del = [
-            k for k, v in params.items() if v.kind in [v.VAR_POSITIONAL, v.VAR_KEYWORD]
-        ]
-        for k in to_del:
-            del params[k]
-        if to_del:
-            print(f"Removed variadic signature elements: {to_del}")
-
-    # sort parameters by kind
-    order = {
-        Parameter.POSITIONAL_ONLY: 0,
-        Parameter.POSITIONAL_OR_KEYWORD: 1,
-        Parameter.VAR_POSITIONAL: 2,
-        Parameter.KEYWORD_ONLY: 3,
-        Parameter.VAR_KEYWORD: 4,
-    }
-    sorted_params = dict(sorted(params.items(), key=lambda item: order[item[1].kind]))
-
-    # edit signature
-    func.__signature__ = Signature(list(sorted_params.values()))  # type: ignore
-
-    # edit annotations
-    if edit_annotations:
-        annots = {name: param.annotation for name, param in sorted_params.items()}
-        func.__annotations__ = annots
-
-    # edit name
-    if edit_name:
-        func.__name__ = "__".join([_.__name__ for _ in other_functions])
-    return func
-
-
-def combine_funcs(
-    funcs: Sequence[Callable], kwargs_updater: Callable | None = None
-) -> Callable[..., None]:
-    if not funcs:
-        raise ValueError(f"Sequence of functions argument seems empty ({funcs})")
-
-    def combined(**kwargs):
-        print("\nCombined: start")
-        if kwargs_updater is not None:
-            params = signature(kwargs_updater).parameters
-            kw = {k: v for k, v in kwargs.items() if k in params}
-            print(f"Combined: calling '{kwargs_updater.__name__}' with: {kw}")
-            updates = kwargs_updater(**kw)
-            kwargs.update(updates)
-        for f in funcs:
-            params = signature(f).parameters
-            kw = {k: v for k, v in kwargs.items() if k in params}
-            print(f"Combined: calling '{f.__name__}' with: {kw}")
-            f(**kw)
-        print("Combined: end\n")
-
-    updater = [kwargs_updater] if kwargs_updater else []
-    edit_function_signature(combined, [*updater, *funcs], no_variadic=True)
-    return combined
-
-
 def update_kwargs_from_context(
-    args: dict[str, Any], ctx: Context, edit_ctx=True
+    kwargs: dict[str, Any],
+    ctx: Context,
+    edit_ctx_param_values=False,
+    edit_ctx_param_sources=True,
 ) -> dict[str, Any]:
     updated_kwargs = {}
-    for k, v in args.items():
+    for k, v in kwargs.items():
         if k not in ctx.params:
             print(f"Using arg {k}={v} (unspecified)")
             updated_kwargs[k] = v
@@ -264,12 +249,12 @@ def update_kwargs_from_context(
             print(f"Using arg {k}={v} (instead of value from {src}: {val})")
         else:
             print(f"Using arg {k}={v} (same as ctx value from {src})")
-        if edit_ctx:
+        if edit_ctx_param_sources:
             # treat the arg as if it came from the cmdline
             ctx.set_parameter_source(k, ParameterSource.COMMANDLINE)
         updated_kwargs[k] = v
 
-    if edit_ctx:
+    if edit_ctx_param_values:
         # update value in context
         for k, v in updated_kwargs.items():
             ctx.params[k] = v
@@ -279,96 +264,113 @@ def update_kwargs_from_context(
 ARGS_YAMLPATH = "args.yml"
 
 
-def app_with_yaml_support(app: Typer) -> Typer:
-    def parse_yamlargs(
-        ctx: Context,
-        yamlpath: Path = Path(ARGS_YAMLPATH),
-        yamlkeys: list[str] | None = None,
-        yaml: bool = True,
-    ) -> None:
-        if not yaml:
-            print("Skipping yaml support")
-            return
-        keys = yamlkeys
-        if yamlkeys is None:
-            if app.info.name:
-                print(f"Using app name ({app.info.name}) as top-level yaml key")
-                keys = [app.info.name]
-            else:
-                # TODO use module name as a fallback
-                raise ValueError("App has no name to infer yaml key from")
+def app_with_yaml_support(
+    app: Typer,
+    yamlpath: Path = Path(ARGS_YAMLPATH),
+    yamlkeys: list[str] | None = None,
+) -> Typer:
+    # use yaml only if no args were provided in the cmdline
+    parser = argparse.ArgumentParser(add_help=False, exit_on_error=False)
+    parser.add_argument("--yaml", action="store_true", default=False)
+    parser.add_argument("--yamlpath", type=str, default=ARGS_YAMLPATH)
+    # FIX skip mistype suggestions (added in Python 3.14)
+    args, unknown = parser.parse_known_args()
+    # if not args.yaml:
+    #     return app
 
-        # get yamlargs
-        do_trace = True if yamlkeys is None else False
-        all_keys, yamlargs = yaml_nested_dict_get(
-            yamlpath, keys=keys, trace_unknown_keys=do_trace
-        )
-        print(f"Args from {yamlpath.absolute()} under {all_keys}:")
-        print(yamlargs)
-        if not isinstance(yamlargs, dict):
-            print("WARNING: args from yaml is not a dict. Assuming an empty dict")
-            yamlargs = {}
-
-        updated_kwargs = update_kwargs_from_context(yamlargs, ctx)
-        ctx.obj = yamlargs
-        if ctx.invoked_subcommand:
-            print(f"parse_yamlargs: to be invoked: {ctx.invoked_subcommand}")
-            return
-
-        # get combined command
-        cmd_names = list(map(lambda s: s.replace("!", ""), all_keys[1:]))
-        funcs = app_funcs_from_keys(app, cmd_names)
-        combined = combine_funcs(funcs)
-
-        # call combined command with updated args
-        ctx.invoked_subcommand = combined.__name__
-        updated_kwargs["ctx"] = ctx
-        ctx.invoke(combined, **updated_kwargs)
-
-    # add_kwarg_updater_callbacks
-    def updater(ctx: Context, funcs_dict: dict[str, Callable] | None = None):
-        print("Running updater")
-        if funcs_dict is None:
-            raise ValueError
-        if ctx.invoked_subcommand:
-            print(f"To be invoked: {ctx.invoked_subcommand}")
-            # ctx.invoke(funcs_dict[ctx.invoked_subcommand], **ctx.obj)
-
-    def add_kwarg_updater_callbacks(tpr: Typer) -> None:
-        print(f"Editing callbacks of {tpr}")
-        cmds = [_ for _ in tpr.registered_commands if _.callback is not None]
-        funcs = [_.callback for _ in cmds if _.callback is not None]
-        names = [_.__name__ for _ in funcs]
-        funcs_dict = dict(zip(names, funcs))
-        pf = partial(updater, funcs_dict=funcs_dict)
-
-        def upd(ctx: Context):
-            pf(ctx)
-
-        upd.__name__ = tpr.info.name if tpr.info.name else "updater"
-
-        if tpr.registered_callback and tpr.registered_callback.callback:
-            print(f"{tpr} already has callback")
-            f = combine_funcs([upd, tpr.registered_callback.callback])
-            app.callback(invoke_without_command=True)(f)
+    keys = yamlkeys
+    if yamlkeys is None:
+        if app.info.name:
+            print(f"Using app name ({app.info.name}) as top-level yaml key")
+            keys = [app.info.name]
         else:
-            print(f"{tpr} has no callback`")
-            tpr.callback()(upd)
+            # TODO use module name as a fallback
+            raise ValueError("App has no name to infer yaml key from")
 
-        for grp in tpr.registered_groups:
-            subtpr = grp.typer_instance
-            if not subtpr:
+    # get yamlargs and corresponding function keys
+    all_keys, yamlargs = yaml_nested_dict_get(yamlpath, keys=keys)
+    print(f"Args from {yamlpath.absolute()} under {all_keys}:")
+    print(yamlargs)
+    if not isinstance(yamlargs, dict):
+        print("WARNING: args from yaml is not a dict. Assuming an empty dict")
+        yamlargs = {}
+
+    # get combined command
+    cmd_names = list(map(lambda s: s.replace("!", ""), all_keys[1:]))
+    funcs = app_funcs_from_keys(app, cmd_names)
+
+    # def up_yamlargs(ctx: Context):
+    #     preparser_args = [_ for _ in ctx.args if _ in ["--yaml", "--yamlpath"]]
+    #     if preparser_args:
+    #         print(f"Preparser args: {ctx.args}")
+    #     return update_kwargs_from_context(yamlargs, ctx)
+
+    # combined = combine_funcs(funcs, kwargs_updater=up_yamlargs)
+
+    def _find_callback(
+        callback: str, tpr: Typer, grp: TyperInfo | None = None
+    ) -> Callable[..., Any] | None:
+        if tpr.registered_callback and (cb := tpr.registered_callback.callback):
+            if (
+                (grp and grp.name == callback)
+                or (tpr.info.name == callback)
+                or (cb.__name__ == callback)
+            ):
+                return cb
+        return None
+        raise ValueError(f"Could not find callback {callback} in typer {tpr}")
+
+    def _find_command_callback(callback: str, tpr: Typer) -> Callable[..., Any] | None:
+        for cmd in tpr.registered_commands:
+            if (cb := cmd.callback) is None:
                 continue
-            add_kwarg_updater_callbacks(subtpr)
+            if cmd.name == callback or cb.__name__ == callback:
+                return cb
+        return None
+        raise ValueError(f"Could not find command callback {callback} in typer {tpr}")
 
-    add_kwarg_updater_callbacks(app)
+    def with_updated_kwargs(func):
+        @wraps(func)
+        def wrapper(ctx: Context, **kwargs):
+            if ctx.invoked_subcommand and ctx.invoked_subcommand not in cmd_names:
+                raise RuntimeError(f"{ctx.invoked_subcommand} is not in {all_keys}")
+            print(f"Meta kwargs: {ctx.meta['updated_kwargs']}")
+            kwargs.update(ctx.meta["updated_kwargs"])
+            kwargs["ctx"] = ctx
+            kw = {k: v for k, v in kwargs.items() if k in signature(func).parameters}
+            print(f"Running wrapped {func} with {kw}")
+            func(**kw)
 
-    # prepend yaml parser callback
-    funcs: list[Callable] = [parse_yamlargs]
+        replace_function_signature(wrapper, [wrapper, func], no_variadic=True)
+        return wrapper
+
+    tpr = app
+    print(funcs)
+    for i, f in enumerate(funcs):
+        funcs[i] = with_updated_kwargs(f)
+
+    print(funcs)
+    app.registered_callback.callback = funcs[0]
+    app.registered_commands[0].callback = funcs[1]
+
+    def update_kwargs(ctx: Context, **kwargs):
+        #     preparser_args = [_ for _ in ctx.args if _ in ["--yaml", "--yamlpath"]]
+        #     if preparser_args:
+        #         print(f"Preparser args: {ctx.args}")
+        ctx.meta["updated_kwargs"] = update_kwargs_from_context(yamlargs, ctx)
+
+    # to help update_kwargs_from_context work properly, ctx.args must include all args
+    # for this, we use a combined signature from across the whole call chain
+    replace_function_signature(update_kwargs, [update_kwargs] + funcs, no_variadic=True)
+
+    # root callback
+    funcs = [update_kwargs]
     if app.registered_callback and app.registered_callback.callback:
         funcs.append(app.registered_callback.callback)
-    yamlparsing_callback = combine_funcs(funcs)
-    app.callback(invoke_without_command=True)(yamlparsing_callback)
+    root_callback = combine_funcs(funcs)
+    app.callback(invoke_without_command=True)(root_callback)
+    # newapp = Typer(name=megafunc.__name__, add_completion=False)
+    # newapp.command()(megafunc)
     return app
 
 
@@ -384,41 +386,89 @@ def opt(
     return Annotated[dtype, Option(*names, help=help, rich_help_panel=panel, **kwargs)]
 
 
+def _print_ctx(ctx: Context):
+    info = {
+        "id": id(ctx),
+        "params": ctx.params,
+        "invoked": ctx.invoked_subcommand,
+        "command": ctx.command,
+        "command_path": ctx.command_path,
+    }
+    print(info)
+
+
+f = mock_function_factory
+# app
 app = Typer(name="cliutils")
-
-
-subapp = Typer(name="subapp")
-
-
-@subapp.command()
-def subtest(ctx: Context, a=2, c=7):
-    print()
-    print(f"Running subtest cmd with: {ctx}")
-    print(ctx.parent)
-    print(ctx.params)
-    print(f"Invoked: {ctx.invoked_subcommand}")
-
-
-app.add_typer(subapp)
+app.callback()(f("root_cb", func=_print_ctx))
 
 
 @app.callback()
-def testcb(ctx: Context, z=8):
-    print()
-    print(f"Running test callback with {ctx}")
-    print(ctx.params)
-    print(f"Invoked: {ctx.invoked_subcommand}")
-    ctx.invoke(subtest, ctx)
+def testcb(ctx: Context, a=1):
+    _print_ctx(ctx)
 
 
 @app.command()
-def test(ctx: Context, a=5, b="asvd"):
-    print()
-    print(f"Running test cmd with {ctx}")
-    print(ctx.params)
-    print(f"Invoked: {ctx.invoked_subcommand}")
-    ctx.invoke(subtest, ctx)
+def test(ctx: Context, a=2, b=1):
+    _print_ctx(ctx)
 
+
+# # subapp
+# subapp = Typer(name="subapp")
+
+
+# @subapp.command()
+# def subtest(ctx: Context, a=2, c=7):
+#     print(f"Running subtest cmd with: {ctx}")
+#     print(ctx.parent)
+#     print(ctx.params)
+#     print(f"Invoked: {ctx.invoked_subcommand}")
+#     print(ctx.command)
+#     print(ctx.command_path)
+#     print()
+
+
+# @subapp.command()
+# def subtest2(ctx: Context, a=3, c=8):
+#     print(f"Running subtest2 cmd with: {ctx}")
+#     print(ctx.parent)
+#     print(ctx.params)
+#     print(f"Invoked: {ctx.invoked_subcommand}")
+#     print(ctx.command)
+#     print(ctx.command_path)
+#     print()
+
+
+# app.add_typer(subapp)
+
+
+# # zubapp
+# zubapp = Typer(name="zubapp")
+
+
+# @zubapp.command()
+# def zubtest(ctx: Context, a=2, c=7):
+#     print(f"Running zubtest cmd with: {ctx}")
+#     print(ctx.parent)
+#     print(ctx.params)
+#     print(f"Invoked: {ctx.invoked_subcommand}")
+#     print(ctx.command)
+#     print(ctx.command_path)
+#     print()
+
+
+# @zubapp.command()
+# def zubtest2(ctx: Context, a=3, c=8):
+#     print(f"Running zubtest2 cmd with: {ctx}")
+#     print(ctx.parent)
+#     print(ctx.params)
+#     print(f"Invoked: {ctx.invoked_subcommand}")
+#     print(ctx.command)
+#     print(ctx.command_path)
+#     print()
+
+
+# subapp.add_typer(zubapp)
 
 if __name__ == "__main__":
     app_with_yaml_support(app)()
