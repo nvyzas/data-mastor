@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from functools import partial
 from typing import Any
 
 import pytest
@@ -9,9 +10,10 @@ from typer.testing import CliRunner
 
 from data_mastor.cliutils import (
     Tf,
-    app_funcs_from_keys,
     app_with_yaml_support,
+    funcs_to_run,
     make_typer,
+    printctx,
 )
 from data_mastor.utils import mock_function_factory
 
@@ -20,14 +22,14 @@ tn = Tf(force_new=True)
 f = mock_function_factory
 
 
-def _assert_result(result: Any, func: Callable, *args, **kwargs):
-    resultcls = type(result)
-    if issubclass(resultcls, Exception):
-        with pytest.raises(resultcls, match=result.args[0]):
+def assert_outcome(outcome: Any, func: Callable, *args, **kwargs):
+    outcomecls = type(outcome)
+    if issubclass(outcomecls, Exception):
+        with pytest.raises(outcomecls, match=outcome.args[0]):
             func(*args, **kwargs)
     else:
-        funcs = app_funcs_from_keys(*args, **kwargs)
-        assert funcs == result
+        return_value = func(*args, **kwargs)
+        assert return_value == outcome
 
 
 @pytest.fixture
@@ -73,7 +75,7 @@ class Test_app_funcs_from_keys:
         app0 = Typer()
         app0.callback()(f(1))
         with pytest.raises(ValueError, match="has no registered commands"):
-            app_funcs_from_keys(app0)
+            funcs_to_run(app0)
 
     @pytest.mark.parametrize(
         ["app_name", "keys", "ret"],
@@ -83,7 +85,7 @@ class Test_app_funcs_from_keys:
         ],
     )
     def test_single_command_no_cmdkey_1(self, _nested, app_name, keys, ret) -> None:
-        _assert_result(ret, app_funcs_from_keys, _nested[app_name])
+        assert_outcome(ret, funcs_to_run, _nested[app_name])
 
     t_0_1 = make_typer("t", cb=f("f0"), cmds=[f("f1")])
     VE1 = ValueError("has no registered commands")
@@ -104,7 +106,7 @@ class Test_app_funcs_from_keys:
 
     @pytest.mark.parametrize(["app", "keys", "ret"], tests1.values(), ids=tests1.keys())
     def test_no_key_or_app_key(self, app: Typer, keys: list[str], ret) -> None:
-        _assert_result(ret, app_funcs_from_keys, app, keys=keys)
+        assert_outcome(ret, funcs_to_run, app, keys=keys)
 
     t_0_12 = make_typer("t", cb=f("f0"), cmds=[f("f1"), f("f2")])
     VE4 = ValueError("has multiple commands matching")
@@ -122,7 +124,7 @@ class Test_app_funcs_from_keys:
 
     @pytest.mark.parametrize(["app", "keys", "ret"], tests2.values(), ids=tests2.keys())
     def test_cmd_key(self, app: Typer, keys: list[str], ret) -> None:
-        _assert_result(ret, app_funcs_from_keys, app, keys=keys)
+        assert_outcome(ret, funcs_to_run, app, keys=keys)
 
 
 def _check(result: Result):
@@ -130,24 +132,22 @@ def _check(result: Result):
     assert result.exit_code == 0
 
 
-yamlapp = app_with_yaml_support
-
-
-def _invoke(ctx: Context, cmd: Callable):
-    ctx.invoke(cmd)
-
-
-def invoke(ctx: Context):
-    pass
-
-
-t(id_="lvl1", cmds=f("cmd1"))
-t(id_="lvl1i", cmds=f("cmd1i", func=_invoke, sigfunc=invoke))
+y = app_with_yaml_support
+i = CliRunner().invoke
+EXC_MSG_NO_CMDS = "Could not get a command for this Typer instance"
 
 
 class Test_app_with_yaml_support:
-    def test_yamlapp(self):
-        app = yamlapp(t("lvl1"))
+    t = partial(t, invoke_without_command=True)
+    f = partial(f, func=printctx)
+    t("t00")  # empty
+    t("t10", cb=f("cb1"))
+    t("t01", cmds=f("cmd1"))
+
+    def test_callback(self):
+        app = y(self.t("t00"))
+        assert app.registered_callback is not None
+        app = y(self.t("t10"))
         assert app.registered_callback is not None
 
     # def test_simple1(self):
@@ -155,5 +155,35 @@ class Test_app_with_yaml_support:
     #     _check(r)
 
     def test_invoke(self):
-        r = CliRunner().invoke(t("lvl1i"), "--help")
+        r = i(y(t("t00")), "--help")
+        _check(r)
+
+    def test_run_basic(self) -> None:
+        # empty typer app - autoinvoke, no yaml support
+        with pytest.raises(RuntimeError, match=EXC_MSG_NO_CMDS):
+            i(t("t00"))
+        # empty typer app - autoinvoke)
+        r = i(y(t("t00")))
+        assert r.exit_code == 0
+        # empty typer app - no autoinvoke)
+        r = i(y(t("t00_noinvoke", invoke_without_command=False)))
+        assert r.exit_code == 2
+        # single callback - autoinvoke, no yaml support
+        r = i((t("t10")))
+        assert r.exit_code == 0
+        # single callback - autoinvoke, no yaml support
+        r = i((t("t10")))
+        assert r.exit_code == 0
+
+        # callback without autoinvoke
+        # i(
+        # _check(r)
+        # r = CliRunner().invoke((t("t00_noinvoke", invoke_without_command=False)))
+
+    def test_run_help(self) -> None:
+        r = CliRunner().invoke((t("tpr1")))
+        _check(r)
+
+    def test_run_noargs(self) -> None:
+        r = CliRunner().invoke((t("tpr1")))
         _check(r)

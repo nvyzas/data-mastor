@@ -1,6 +1,6 @@
 from collections.abc import Callable
 from functools import WRAPPER_ASSIGNMENTS, partial, wraps
-from inspect import signature
+from inspect import Signature, signature
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -22,13 +22,46 @@ from data_mastor.utils import (
 # TYPER
 
 
+def context_signature(key: str = "ctx"):
+    def ctx_sig(ctx: Context):
+        """A dummy function to hold the context argument"""
+
+    new_param = signature(ctx_sig).parameters["ctx"].replace(name=key)
+    return Signature([new_param])
+
+
+class Tf:
+    """Typer (App) Factory"""
+
+    apps: dict[str | int, Typer] = {}
+
+    def __init__(self, force_new: bool = False) -> None:
+        self.force_new = force_new
+
+    def __call__(
+        self,
+        id_: str | int | None = None,
+        force_new: bool | None = None,
+        **kwargs,
+    ) -> Typer:
+        if id_ is None:
+            id_ = _different(self.apps)
+        force_new = self.force_new if force_new is None else force_new
+        if force_new:
+            app = make_typer(**kwargs, name=str(id_))
+            self.apps[id_] = app
+            return app
+        return self.apps.setdefault(id_, make_typer(**kwargs, name=str(id_)))
+
+
 def make_typer(
     name: str | None = None,
     cb: Callable | None = None,
     cmds: list[Callable] | Callable | None = None,
     tprs: list[Typer] | Typer | None = None,
+    **kwargs,
 ) -> Typer:
-    app = Typer(name=name)
+    app = Typer(name=name, **kwargs)
     if cb is not None:
         app.callback()(cb)
     if cmds is not None:
@@ -80,31 +113,6 @@ def traverse_typer(
         )
 
 
-class Tf:
-    """(Typer) App Factory"""
-
-    apps: dict[str | int, Typer] = {}
-
-    def __init__(self, force_new: bool = False) -> None:
-        self.force_new = force_new
-
-    def __call__(
-        self,
-        id_: str | int | None = None,
-        force_new: bool | None = None,
-        *args,
-        **kwargs,
-    ) -> Typer:
-        if id_ is None:
-            id_ = _different(self.apps)
-        force_new = self.force_new if force_new is None else force_new
-        if force_new:
-            app = make_typer(*args, **kwargs, name=str(id_))
-            self.apps[id_] = app
-            return app
-        return self.apps.setdefault(id_, make_typer(*args, **kwargs, name=str(id_)))
-
-
 Opt = Option
 
 
@@ -117,7 +125,7 @@ def opt(
     return Annotated[dtype, Option(*names, help=help, rich_help_panel=panel, **kwargs)]
 
 
-def printctx(ctx: Context, **kwargs):
+def printctx(ctx: Context):
     info = {
         "id": id(ctx),
         "params": ctx.params,
@@ -128,7 +136,8 @@ def printctx(ctx: Context, **kwargs):
     print(info)
 
 
-def app_funcs_from_keys(app: Typer, keys: list[str] | str | None = None):
+# TODO remove this and its tests
+def funcs_to_run(app: Typer, keys: list[str] | str | None = None):
     if keys is None:
         keys = []
     elif isinstance(keys, str):
@@ -302,12 +311,9 @@ def app_with_yaml_support(app: Typer) -> Typer:
                 print(f"Running wrapped {func.__name__} with {kw}")
                 func(**kw)
 
-        def ctx_sig(ctx: Context):
-            """A dummy function to hold the context argument"""
-
         exclude = {func_ctx_args[0]: [func]} if func_ctx_args else None
         replace_function_signature(
-            wrapper, [ctx_sig, func], no_variadic=True, exclude=exclude
+            wrapper, [context_signature(), func], no_variadic=True, exclude=exclude
         )
         return wrapper
 
@@ -320,7 +326,7 @@ def app_with_yaml_support(app: Typer) -> Typer:
         combined = combine_funcs([parse_args_from_yaml, cb])
         app.callback(invoke_without_command=autoinvoke)(combined)
     else:
-        app.callback(invoke_without_command=True)(parse_args_from_yaml)
+        app.callback()(parse_args_from_yaml)
     return app
 
 
@@ -350,6 +356,7 @@ def get_yamldict_key(
 
 
 if __name__ == "__main__":
+    t = Tf()
     f = mock_function_factory
 
     def sigs(ctxo: Context, a=1, b=1, c=1, d=1):
@@ -357,16 +364,20 @@ if __name__ == "__main__":
 
     s = partial(sigpart, sigs, "ctxo")
 
-    # app
-    app = Typer(name="cliutils")
-    app.callback(invoke_without_command=True)(f("cb1", printctx, s("a")))
-    app.command()(f("cmd1", printctx, s("a", "b")))
+    # # app
+    # app = Typer(name="cliutils")
+    # app.callback(invoke_without_command=True)(f("cb1", printctx, s("a")))
+    # app.command()(f("cmd1", printctx, s("a", "b")))
 
-    # subapp
-    subapp = Typer(name="subapp")
-    subapp.callback(invoke_without_command=True)(f("cb2", printctx, s("c")))
-    subapp.command()(f("cmd2", printctx, s("c", "d")))
-    app.add_typer(subapp)
+    # # subapp
+    # subapp = Typer(name="subapp")
+    # subapp.callback(invoke_without_command=True)(f("cb2", printctx, s("c")))
+    # subapp.command()(f("cmd2", printctx, s("c", "d")))
+    # app.add_typer(subapp)
 
     # run app
-    app_with_yaml_support(app)()
+    # app_with_yaml_support(
+    #     t("cliutils", invoke_without_command=True, cb=f("cb1", printctx, s("a")))
+    # )()
+
+    app_with_yaml_support(t("cliutils", invoke_without_command=True))()
