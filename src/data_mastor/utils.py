@@ -1,8 +1,10 @@
 import random
 from collections.abc import Callable, Collection, Sequence
 from inspect import Parameter, Signature, signature
-from typing import Any, cast
+from typing import Any
 from unittest.mock import MagicMock
+
+# CALLABLES
 
 
 def sigpart(func: Callable, *picked: str):
@@ -131,3 +133,60 @@ def mock_function_factory(
     replace_function_signature(_f, [funcsig])
 
     return _f
+
+
+# MISC
+
+
+def nested_dict_get(
+    dict_: dict[str, Any],
+    keys: list[str] | str | None = None,
+    trace_unknown_keys: bool = False,
+    raise_on_error: bool = True,
+    debug_on_error: bool = False,
+    expected_ret_cls: Any = dict,
+) -> tuple[list[str], Any]:
+    if keys is None:
+        keys = []
+    elif isinstance(keys, str):
+        keys = [keys]
+    for i, key in enumerate(keys):
+        if not isinstance(dict_, dict):
+            msg = f"Object under keys '{keys[:i]}' is not a dictionary"
+            if raise_on_error:
+                raise TypeError(msg)
+            else:
+                if debug_on_error:
+                    print(f"WARNING: {msg}")
+                return keys[:i], expected_ret_cls()
+        if key not in dict_.keys():
+            msg = f"Dict under keys '{keys[:i]}' has no key '{key}'"
+            if raise_on_error:
+                raise KeyError(msg)
+            else:
+                if debug_on_error:
+                    print(f"WARNING: {msg}")
+                return keys[:i], expected_ret_cls()
+        dict_ = dict_[key]
+    if trace_unknown_keys:
+        unknown_keys = []
+        while True:
+            if not isinstance(dict_, dict):
+                break
+            marked_keys = [k for k in dict_ if "!" in k]
+            if len(marked_keys) > 1:
+                raise KeyError(f"There are multiple marked keys ({marked_keys})")
+            if len(marked_keys) == 0:
+                break
+            unknown_keys.append(marked_keys[0])
+            dict_ = dict_[unknown_keys[-1]]
+        keys += unknown_keys
+    if not issubclass(type(dict_), expected_ret_cls):
+        msg = f"Returned obj ({dict_}) is not of expected class ({expected_ret_cls})"
+        if raise_on_error:
+            raise TypeError(msg)
+        else:
+            if debug_on_error:
+                print(f"WARNING: {msg}")
+            return keys, expected_ret_cls()
+    return keys, dict_

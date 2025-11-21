@@ -1,13 +1,10 @@
-import argparse
-import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from functools import partial, wraps
-from inspect import Parameter, Signature, signature
+from inspect import signature
 from pathlib import Path
-from typing import Annotated, Any, cast
+from typing import Annotated, Any
 
 import yaml
-from click import get_current_context
 from click.core import ParameterSource
 from rich import print
 from typer import Context, Option, Typer
@@ -17,9 +14,12 @@ from data_mastor.utils import (
     _different,
     combine_funcs,
     mock_function_factory,
+    nested_dict_get,
     replace_function_signature,
     sigpart,
 )
+
+# TYPER
 
 
 def make_typer(
@@ -102,91 +102,27 @@ class Tf:
         return self.apps.setdefault(id_, make_typer(*args, **kwargs, name=str(id_)))
 
 
-# DO replace all uses of this with nested_yaml_dict_get
-def get_yamldict_key(
-    yamlfile: str | Path, key: str, doraise: bool = False, default: Any = None
-):
-    if default is None:
-        default = {}
-    yamlfile = Path(yamlfile)
-    if yamlfile.is_file():
-        with open(yamlfile) as file:
-            yamldict = yaml.safe_load(file)
-            if key not in yamldict:
-                msg = f"Top-level key '{key}' was not found"
-                if doraise:
-                    raise KeyError(msg)
-                print(msg)
-                return default
-            return yamldict[key]
-    else:
-        msg = f"File '{yamlfile}' was not found"
-        if doraise:
-            raise FileNotFoundError(msg)
-        print(msg)
-        return default
+Opt = Option
 
 
-def yaml_nested_dict_get(
-    yamlpath: str | Path,
-    keys: list[str] | str | None = None,
-    trace_unknown_keys: bool = True,
-    doraise: bool = True,
-    debug: bool = False,
-) -> tuple[list[str], Any]:
-    exc: Exception
+# REF (copilot) use this to refactor spiders
+def opt(
+    dtype: type, names: str | list[str], help: str | None, panel: str | None, **kwargs
+) -> Annotated:
+    if isinstance(names, str):
+        names = [names]
+    return Annotated[dtype, Option(*names, help=help, rich_help_panel=panel, **kwargs)]
 
-    yamlpath = Path(yamlpath)
-    if not yamlpath.exists():
-        exc = FileNotFoundError(f"File '{yamlpath}' does not exist")
-        if doraise:
-            raise exc
-        elif debug:
-            print(exc)
-            return [], {}
-        else:
-            return [], {}
 
-    with open(yamlpath) as file:
-        yamlpart = yaml.safe_load(file)
-    if keys is None:
-        return [], yamlpart
-    if isinstance(keys, str):
-        keys = [keys]
-    for i, key in enumerate(keys):
-        if not isinstance(yamlpart, dict):
-            exc = TypeError(f"Yaml element at '{keys[:i]}' is not a dictionary")
-            if doraise:
-                raise exc
-            elif debug:
-                print(exc)
-                return keys[:i], yamlpart
-            else:
-                return keys[:i], yamlpart
-        if key not in yamlpart.keys():
-            exc = KeyError(f"Key '{key}' was not found in yaml dict at '{keys[:i]}'")
-            if doraise:
-                raise exc
-            elif debug:
-                print(exc)
-                return keys[:i], yamlpart
-            else:
-                return keys[:i], yamlpart
-        yamlpart = yamlpart[key]
-    if trace_unknown_keys:
-        unknown_keys = []
-        while True:
-            if not isinstance(yamlpart, dict):
-                break
-            marked_keys = [k for k in yamlpart if "!" in k]
-            if len(marked_keys) > 1:
-                raise KeyError(f"There are multiple marked keys: {marked_keys}")
-            if len(marked_keys) == 0:
-                break
-            unknown_keys.append(marked_keys[0])
-            yamlpart = yamlpart[unknown_keys[-1]]
-        keys += unknown_keys
-    return keys, yamlpart
+def printctx(ctx: Context, **kwargs):
+    info = {
+        "id": id(ctx),
+        "params": ctx.params,
+        "invoked": ctx.invoked_subcommand,
+        "command": ctx.command,
+        "command_path": ctx.command_path,
+    }
+    print(info)
 
 
 def app_funcs_from_keys(app: Typer, keys: list[str] | str | None = None):
@@ -267,9 +203,14 @@ def update_kwargs_from_context(
     ctx: Context,
     update_ctx=False,
     inplace=False,
+    ignored: list[str] | None = None,
 ) -> dict[str, Any]:
     updated_kwargs = kwargs if inplace else {}
+    ignored = ignored or []
     for k, v in kwargs.items():
+        if k in ignored:
+            print(f"Ignoring arg {k} (ignore list)")
+            continue
         if k not in ctx.params:
             print(f"Using arg {k}={v} (unspecified)")
             updated_kwargs[k] = v
@@ -277,12 +218,10 @@ def update_kwargs_from_context(
         val = ctx.params[k]
         src = ctx.get_parameter_source(k)
         if src == ParameterSource.COMMANDLINE:
-            print(f"Ignoring arg {k}={v} (overriden by value from cmdline: {val})")
+            print(f"Overriding arg {k}={v} (cmdline value: {val})")
+            updated_kwargs[k] = val
             continue
-        if v != val:
-            print(f"Using arg {k}={v} (instead of value from {src}: {val})")
-        else:
-            print(f"Using arg {k}={v} (same as ctx value from {src})")
+        print(f"Using arg {k}={v} ({src} value: {val}")
         updated_kwargs[k] = v
         if update_ctx:
             # treat the arg as if it came from the cmdline
@@ -292,136 +231,114 @@ def update_kwargs_from_context(
     return updated_kwargs
 
 
+# YAML
+
 ARGS_YAMLPATH = "args.yml"
 
 
-def app_with_yaml_support(
-    app: Typer,
-    yamlpath: Path = Path(ARGS_YAMLPATH),
-    yamlkeys: list[str] | None = None,
-) -> Typer:
-    # use yaml only if no args were provided in the cmdline
-    parser = argparse.ArgumentParser(add_help=False, exit_on_error=False)
-    parser.add_argument("--yaml", action="store_true", default=False)
-    parser.add_argument("--yamlpath", type=str, default=ARGS_YAMLPATH)
-    # FIX skip mistype suggestions (added in Python 3.14)
-    args, unknown = parser.parse_known_args()
-    # if not args.yaml:
-    #     return app
-
-    keys = yamlkeys
-    if yamlkeys is None:
-        if app.info.name:
-            print(f"Using app name ({app.info.name}) as top-level yaml key")
-            keys = [app.info.name]
-        else:
-            # TODO use module name as a fallback
-            raise ValueError("App has no name to infer yaml key from")
-
-    # get yamlargs and corresponding function keys
-    all_keys, yamlargs = yaml_nested_dict_get(yamlpath, keys=keys)
-    print(f"Args from {yamlpath.absolute()} under {all_keys}:")
-    print(yamlargs)
-    if not isinstance(yamlargs, dict):
-        print("WARNING: args from yaml is not a dict. Assuming an empty dict")
-        yamlargs = {}
-
-    # get combined command
-    cmd_names = list(map(lambda s: s.replace("!", ""), all_keys[1:]))
-    funcs = app_funcs_from_keys(app, cmd_names)
+def app_with_yaml_support(app: Typer) -> Typer:
+    def parse_args_from_yaml(
+        ctx: Context,
+        yamlpath: Path = Path(ARGS_YAMLPATH),
+        disabled: bool = False,
+    ) -> dict[str, Any]:
+        if disabled:
+            print("WARNING: yaml support is disabled. Assuming no yamlargs")
+            return {}
+        if not yamlpath.exists():
+            print(f"WARNING: yaml file {yamlpath} does not exist. Assuming no yamlargs")
+            return {}
+        # read yaml file
+        with open(yamlpath) as file:
+            yamlargs = yaml.safe_load(file)
+        if not isinstance(yamlargs, dict):
+            print(f"WARNING: yaml args {yamlargs} is not a dict. Assuming no yamlargs")
+            return {}
+        ctx.meta["yamlargs"] = yamlargs
+        ctx.meta["unspecified"] = {}
+        return yamlargs
 
     def with_updated_kwargs(func):
         @wraps(func)
         def wrapper(ctx: Context, **kwargs):
-            if ctx.invoked_subcommand and ctx.invoked_subcommand not in cmd_names:
-                raise RuntimeError(f"{ctx.invoked_subcommand} is not in {all_keys}")
-            # print(f"Meta kwargs: {ctx.meta['updated_kwargs']}")
-            # kwargs.update(ctx.meta["updated_kwargs"])
             print(f"Running wrapper of {func.__name__}")
-            updated = update_kwargs_from_context(yamlargs, ctx)
-            kwargs.update(updated)
+            if yamlargs := ctx.meta.get("yamlargs"):
+                keys = ctx.command_path.replace(".py", "").split(" ")
+                args = {}
+                try:
+                    used_keys, args = nested_dict_get(yamlargs, keys=keys)
+                    print(f"Using args from {used_keys}: {args}")
+                except Exception as exc:
+                    print(f"WARNING: {exc}")
+                ignored = [invoked] if (invoked := ctx.invoked_subcommand) else []
+                updated = update_kwargs_from_context(args, ctx, ignored=ignored)
+                kwargs.update(updated)
+                unspecified = {k: v for k, v in updated.items() if k not in kwargs}
+                ctx.meta["unspecified"][keys[-1]] = unspecified
             kwargs["ctx"] = ctx
 
             kw = {k: v for k, v in kwargs.items() if k in signature(func).parameters}
-            print(f"Running wrapped {func} with {kw}")
+            print(f"Running wrapped {func.__name__} with {kw}")
             func(**kw)
 
         replace_function_signature(wrapper, [wrapper, func], no_variadic=True)
         return wrapper
 
-    # tpr = app
-    # print(funcs)
-    # for i, f in enumerate(funcs):
-    #     funcs[i] = with_updated_kwargs(f)
-    # print(funcs)
-    # app.registered_callback.callback = funcs[0]
-    # app.registered_commands[0].callback = funcs[1]
-
+    # decorate all typer callbacks to work with updated kwargs
     traverse_typer(app, callback_decorator=with_updated_kwargs)
 
-    def update_kwargs(ctx: Context, **kwargs):
-        #     preparser_args = [_ for _ in ctx.args if _ in ["--yaml", "--yamlpath"]]
-        #     if preparser_args:
-        #         print(f"Preparser args: {ctx.args}")
-        ctx.meta["updated_kwargs"] = update_kwargs_from_context(yamlargs, ctx)
-
-    # to help update_kwargs_from_context work properly, ctx.args must include all args
-    # for this, we use a combined signature from across the whole call chain
-    # replace_function_signature(update_kwargs, [update_kwargs] + funcs, no_variadic=True)
-
     # root callback
-    # funcs = [update_kwargs]
-    # if app.registered_callback and app.registered_callback.callback:
-    #     funcs.append(app.registered_callback.callback)
-    # root_callback = combine_funcs(funcs)
-    # app.callback(invoke_without_command=True)(root_callback)
-    # newapp = Typer(name=megafunc.__name__, add_completion=False)
-    # newapp.command()(megafunc)
+    root_callback = parse_args_from_yaml
+    if app.registered_callback and app.registered_callback.callback:
+        funcs = [parse_args_from_yaml, app.registered_callback.callback]
+        root_callback = combine_funcs(funcs)
+    app.callback(invoke_without_command=True)(root_callback)
     return app
 
 
-Opt = Option
+# DO replace all uses of this with nested_yaml_dict_get
+def get_yamldict_key(
+    yamlfile: str | Path, key: str, doraise: bool = False, default: Any = None
+):
+    if default is None:
+        default = {}
+    yamlfile = Path(yamlfile)
+    if yamlfile.is_file():
+        with open(yamlfile) as file:
+            yamldict = yaml.safe_load(file)
+            if key not in yamldict:
+                msg = f"Top-level key '{key}' was not found"
+                if doraise:
+                    raise KeyError(msg)
+                print(msg)
+                return default
+            return yamldict[key]
+    else:
+        msg = f"File '{yamlfile}' was not found"
+        if doraise:
+            raise FileNotFoundError(msg)
+        print(msg)
+        return default
 
-
-# REF (copilot) use this to refactor spiders
-def opt(
-    dtype: type, names: str | list[str], help: str | None, panel: str | None, **kwargs
-) -> Annotated:
-    if isinstance(names, str):
-        names = [names]
-    return Annotated[dtype, Option(*names, help=help, rich_help_panel=panel, **kwargs)]
-
-
-def printctx(ctx: Context, **kwargs):
-    info = {
-        "id": id(ctx),
-        "params": ctx.params,
-        "invoked": ctx.invoked_subcommand,
-        "command": ctx.command,
-        "command_path": ctx.command_path,
-    }
-    print(info)
-
-
-def sigs(ctx: Context, a=1, b=1, c=1, d=1):
-    pass
-
-
-s = partial(sigpart, sigs, "ctx")
-
-f = mock_function_factory
-# app
-app = Typer(name="cliutils")
-app.callback(invoke_without_command=True)(f("cb1", func=printctx, funcsig=s("a")))
-app.command()(f("cmd1", func=printctx, funcsig=s("a", "b")))
-
-
-# subapp
-subapp = Typer(name="subapp")
-subapp.callback(invoke_without_command=True)(f("cb2", func=printctx, funcsig=s("c")))
-subapp.command()(f("cmd2", func=printctx, funcsig=s("c", "d")))
-app.add_typer(subapp)
 
 if __name__ == "__main__":
+    f = mock_function_factory
+
+    def sigs(ctx: Context, a=1, b=1, c=1, d=1):
+        pass
+
+    s = partial(sigpart, sigs, "ctx")
+
+    # app
+    app = Typer(name="cliutils")
+    app.callback(invoke_without_command=True)(f("cb1", printctx, s("a")))
+    app.command()(f("cmd1", printctx, s("a", "b")))
+
+    # subapp
+    subapp = Typer(name="subapp")
+    subapp.callback(invoke_without_command=True)(f("cb2", printctx, s("c")))
+    subapp.command()(f("cmd2", printctx, s("c", "d")))
+    app.add_typer(subapp)
+
     app_with_yaml_support(app)()
     # app()

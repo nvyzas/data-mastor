@@ -1,4 +1,3 @@
-import argparse
 import importlib
 import json
 import os
@@ -19,7 +18,7 @@ from rich import print as rprint
 from sqlalchemy import Engine, MetaData, create_engine
 from sqlalchemy.orm.decl_api import DeclarativeBase
 
-from data_mastor.cliutils import app_with_yaml_support, get_yamldict_key
+from data_mastor.cliutils import app_with_yaml_support
 
 # typer app
 app = typer.Typer(name="db", no_args_is_help=True, add_completion=False)

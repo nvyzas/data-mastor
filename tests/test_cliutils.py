@@ -1,23 +1,23 @@
-import inspect
-import random
 from collections.abc import Callable
-from functools import wraps
-from inspect import Signature, get_annotations, signature
 from typing import Any
-from unittest.mock import MagicMock, Mock
 
-import click
 import pytest
 from click.testing import Result
 from rich import print
 from typer import Context, Typer
 from typer.testing import CliRunner
 
-from data_mastor.cliutils import Tf, app_funcs_from_keys, app_with_yaml_support
-from data_mastor.utils import _different
+from data_mastor.cliutils import (
+    Tf,
+    app_funcs_from_keys,
+    app_with_yaml_support,
+    make_typer,
+)
+from data_mastor.utils import mock_function_factory
 
 t = Tf()
 tn = Tf(force_new=True)
+f = mock_function_factory
 
 
 def _assert_result(result: Any, func: Callable, *args, **kwargs):
@@ -85,7 +85,7 @@ class Test_app_funcs_from_keys:
     def test_single_command_no_cmdkey_1(self, _nested, app_name, keys, ret) -> None:
         _assert_result(ret, app_funcs_from_keys, _nested[app_name])
 
-    t_0_1 = maketyper("t", cb=f("f0"), cmds=[f("f1")])
+    t_0_1 = make_typer("t", cb=f("f0"), cmds=[f("f1")])
     VE1 = ValueError("has no registered commands")
     VE2 = ValueError("has multiple commands but no cmdkey was given")
     VE3 = ValueError("has groups but no cmdkey was given")
@@ -106,7 +106,7 @@ class Test_app_funcs_from_keys:
     def test_no_key_or_app_key(self, app: Typer, keys: list[str], ret) -> None:
         _assert_result(ret, app_funcs_from_keys, app, keys=keys)
 
-    t_0_12 = maketyper("t", cb=f("f0"), cmds=[f("f1"), f("f2")])
+    t_0_12 = make_typer("t", cb=f("f0"), cmds=[f("f1"), f("f2")])
     VE4 = ValueError("has multiple commands matching")
     VE5 = ValueError("has no command matching")
     tests2 = {
@@ -145,7 +145,7 @@ t(id_="lvl1", cmds=f("cmd1"))
 t(id_="lvl1i", cmds=f("cmd1i", func=_invoke, sigfunc=invoke))
 
 
-class Test_yaml_app:
+class Test_app_with_yaml_support:
     def test_yamlapp(self):
         app = yamlapp(t("lvl1"))
         assert app.registered_callback is not None

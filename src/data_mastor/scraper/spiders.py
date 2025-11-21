@@ -15,8 +15,8 @@ from scrapy.utils.project import get_project_settings
 from data_mastor.cliutils import (
     Opt,
     app_with_yaml_support,
+    nested_dict_get,
     replace_function_signature,
-    yaml_nested_dict_get,
 )
 from data_mastor.scraper.middlewares import PrivacyCheckerDlMw, ResponseSaverSpMw
 from data_mastor.scraper.pipelines import TIMESTAMP_FMT, ListingStorer, SourceStorer
@@ -480,7 +480,7 @@ class Meta(type):
         if not info_file:
             return c
         codename = name[:-3].lower()
-        _, info = yaml_nested_dict_get(info_file, [codename], doraise=False)
+        _, info = nested_dict_get(info_file, [codename], raise_on_error=False)
         spider_info = info.get(spidertype.lower(), {})
         # set custom classvars: shop name, html_fields
         setattr(c, "shop", info.get("name", codename))
