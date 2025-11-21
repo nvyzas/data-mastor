@@ -19,7 +19,7 @@ runs:
       uses: astral-sh/setup-uv@f94ec6bedd8674c4426838e6b50417d36b6ab231 #v5.3.1
       with:
         enable-cache: true
-        version: "0.9.8"
+        version: "0.9.11"
     - name: Install the project
       shell: sh
       run: uv sync --locked --all-extras --dev
