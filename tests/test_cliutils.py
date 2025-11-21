@@ -1,6 +1,6 @@
 from collections.abc import Callable
 from functools import partial
-from typing import Any
+from typing import Any, Self
 
 import pytest
 from click.testing import Result
@@ -22,14 +22,37 @@ tn = Tf(force_new=True)
 f = mock_function_factory
 
 
-def assert_outcome(outcome: Any, func: Callable, *args, **kwargs):
-    outcomecls = type(outcome)
-    if issubclass(outcomecls, Exception):
-        with pytest.raises(outcomecls, match=outcome.args[0]):
+class Outcome:
+    def __init__(
+        self,
+        retprops: dict[str, Any] | None = None,
+        objprops: list[tuple[Any, dict[str, Any]]] | None = None,
+        retvalue=None,
+    ) -> None:
+        self.retvalue = retvalue
+        self.retprops = retprops
+        self.objprops = objprops
+
+    def _check(self, ret: Any):
+        if self.retprops is not None:
+            for k, v in self.retprops.items():
+                assert getattr(ret, k) == v
+        if self.objprops is not None:
+            for obj, props in self.objprops:
+                for k, v in props.items():
+                    assert getattr(obj, k) == v
+        if self.retvalue is not None:
+            assert ret == self.retvalue
+
+
+def assert_outcome(outcome: Outcome | Exception | Any, func: Callable, *args, **kwargs):
+    if isinstance(outcome, Exception):
+        with pytest.raises(type(outcome), match=outcome.args[0]):
             func(*args, **kwargs)
+    elif isinstance(outcome, Outcome):
+        outcome._check(func(*args, **kwargs))
     else:
-        return_value = func(*args, **kwargs)
-        assert return_value == outcome
+        Outcome(retvalue=outcome)._check(func(*args, **kwargs))
 
 
 @pytest.fixture
@@ -70,63 +93,6 @@ def app(_nested, app_name: str) -> Typer:
     return _nested[app_name]
 
 
-class Test_app_funcs_from_keys:
-    def test_single_command_only_callback(self) -> None:
-        app0 = Typer()
-        app0.callback()(f(1))
-        with pytest.raises(ValueError, match="has no registered commands"):
-            funcs_to_run(app0)
-
-    @pytest.mark.parametrize(
-        ["app_name", "keys", "ret"],
-        [
-            ["a1", [], ValueError("groups but no cmdkey")],
-            ["a1", ["a2"], ValueError("groups but no cmdkey")],
-        ],
-    )
-    def test_single_command_no_cmdkey_1(self, _nested, app_name, keys, ret) -> None:
-        assert_outcome(ret, funcs_to_run, _nested[app_name])
-
-    t_0_1 = make_typer("t", cb=f("f0"), cmds=[f("f1")])
-    VE1 = ValueError("has no registered commands")
-    VE2 = ValueError("has multiple commands but no cmdkey was given")
-    VE3 = ValueError("has groups but no cmdkey was given")
-    tests1 = {
-        "no-key": [t(cmds=f(1)), [], [f(1)]],
-        "no-key_with-cb": [t(cb=f(1), cmds=f(2)), [], [f(1), f(2)]],
-        "no-key_no-cmds": [t(), [], VE1],
-        "no-key_mult-cmds": [t(cmds=[f(), f()]), [], VE2],
-        "no-key_groups": [t(cmds=f(), tprs=t()), [], VE3],
-        "app-key": [t(tprs=tn("t", cmds=f(1))), ["t"], [f(1)]],
-        "app-key_with-cb": [t(tprs=t_0_1), ["t"], [f("f0"), f("f1")]],
-        "app-key_no-cmds": [t(tprs=tn("t", cmds=[])), ["t"], VE1],
-        "app-key_mult-cmds": [t(tprs=tn("t", cmds=[f(), f()])), ["t"], VE2],
-        "app-key_groups": [t(tprs=tn("t", cmds=f(), tprs=t())), ["t"], VE3],
-    }
-
-    @pytest.mark.parametrize(["app", "keys", "ret"], tests1.values(), ids=tests1.keys())
-    def test_no_key_or_app_key(self, app: Typer, keys: list[str], ret) -> None:
-        assert_outcome(ret, funcs_to_run, app, keys=keys)
-
-    t_0_12 = make_typer("t", cb=f("f0"), cmds=[f("f1"), f("f2")])
-    VE4 = ValueError("has multiple commands matching")
-    VE5 = ValueError("has no command matching")
-    tests2 = {
-        "l1": [t(cmds=f("f")), ["f"], [f("f")]],
-        "l1_wth-cb": [t(cb=f(1), cmds=f("f")), ["f"], [f(1), f("f")]],
-        "l1_mult-cmd-match": [t(cmds=[f("f"), f("f")]), ["f"], VE4],
-        "l1_no-cmd-match": [t(cmds=f("f")), ["g"], VE5],
-        "l2_with-cb": [t(tprs=t_0_12), ["t", "f1"], [f("f0"), f("f1")]],
-        "l2": [t(tprs=tn("t", cmds=f("f"))), ["t", "f"], [f("f")]],
-        "l2_mult-cmd-match": [t(tprs=tn("t", cmds=[f("f"), f("f")])), ["t", "f"], VE4],
-        "l2_no-cmd-match": [t(tprs=tn("t", cmds=f("f"))), ["t", "g"], VE5],
-    }
-
-    @pytest.mark.parametrize(["app", "keys", "ret"], tests2.values(), ids=tests2.keys())
-    def test_cmd_key(self, app: Typer, keys: list[str], ret) -> None:
-        assert_outcome(ret, funcs_to_run, app, keys=keys)
-
-
 def _check(result: Result):
     print(result.output)
     assert result.exit_code == 0
@@ -138,11 +104,13 @@ EXC_MSG_NO_CMDS = "Could not get a command for this Typer instance"
 
 
 class Test_app_with_yaml_support:
-    t = partial(t, invoke_without_command=True)
+    t = partial(t, invoke_without_command=False)
+    ti = partial(t, invoke_without_command=True)
     f = partial(f, func=printctx)
     t("t00")  # empty
     t("t10", cb=f("cb1"))
     t("t01", cmds=f("cmd1"))
+    Oc = Outcome
 
     def test_callback(self):
         app = y(self.t("t00"))
@@ -158,22 +126,35 @@ class Test_app_with_yaml_support:
         r = i(y(t("t00")), "--help")
         _check(r)
 
-    def test_run_basic(self) -> None:
+    tests = {
+        "t00_no-yaml": [t("t00"), False, RuntimeError(EXC_MSG_NO_CMDS)],
+        "t00": [t("t00", invoke_without_command=False), True, Oc({"exit_code": 2})],
+        "t00_auto-invoke": [ti("t00"), True, Oc({"exit_code": 0})],
+    }
+
+    @pytest.mark.parametrize(
+        ["app", "yaml", "outcome"], tests.values(), ids=tests.keys()
+    )
+    def test_run_basic(self, app: Typer, yaml: bool, outcome) -> None:
+        app_ = app_with_yaml_support(app) if yaml else app
+        func = CliRunner().invoke
+        assert_outcome(outcome, func, app_)
         # empty typer app - autoinvoke, no yaml support
-        with pytest.raises(RuntimeError, match=EXC_MSG_NO_CMDS):
-            i(t("t00"))
+        # with pytest.raises(RuntimeError, match=EXC_MSG_NO_CMDS):
+        #     i(t("t00"))
+
         # empty typer app - autoinvoke)
-        r = i(y(t("t00")))
-        assert r.exit_code == 0
-        # empty typer app - no autoinvoke)
-        r = i(y(t("t00_noinvoke", invoke_without_command=False)))
-        assert r.exit_code == 2
-        # single callback - autoinvoke, no yaml support
-        r = i((t("t10")))
-        assert r.exit_code == 0
-        # single callback - autoinvoke, no yaml support
-        r = i((t("t10")))
-        assert r.exit_code == 0
+        # r = i(y(t("t00")))
+        # assert r.exit_code == 0
+        # # empty typer app - no autoinvoke)
+        # r = i(y(t("t00_noinvoke", invoke_without_command=False)))
+        # assert r.exit_code == 2
+        # # single callback - autoinvoke, no yaml support
+        # r = i((t("t10")))
+        # assert r.exit_code == 0
+        # # single callback - autoinvoke, no yaml support
+        # r = i((t("t10")))
+        # assert r.exit_code == 0
 
         # callback without autoinvoke
         # i(

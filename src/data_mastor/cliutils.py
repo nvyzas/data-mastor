@@ -30,28 +30,34 @@ def context_signature(key: str = "ctx"):
     return Signature([new_param])
 
 
+# SOMEDAY Generalize this with editor and maker functions as args
 class Tf:
     """Typer (App) Factory"""
 
     apps: dict[str | int, Typer] = {}
 
-    def __init__(self, force_new: bool = False) -> None:
+    def __init__(self, force_new: bool = False, **make_kwargs) -> None:
         self.force_new = force_new
+        self.make_kwargs = make_kwargs or {}
 
     def __call__(
         self,
         id_: str | int | None = None,
         force_new: bool | None = None,
-        **kwargs,
+        **edit_kwargs,
     ) -> Typer:
         if id_ is None:
             id_ = _different(self.apps)
         force_new = self.force_new if force_new is None else force_new
         if force_new:
-            app = make_typer(**kwargs, name=str(id_))
+            app = make_typer(name=str(id_), **self.make_kwargs)
+            [edit_kwargs.pop(k, None) for k in self.make_kwargs]
+            edit_typer(app, **edit_kwargs)
             self.apps[id_] = app
             return app
-        return self.apps.setdefault(id_, make_typer(**kwargs, name=str(id_)))
+        app = self.apps.setdefault(id_, make_typer(name=str(id_), **self.make_kwargs))
+        edit_typer(app, **edit_kwargs)
+        return app
 
 
 def make_typer(
@@ -61,7 +67,7 @@ def make_typer(
     tprs: list[Typer] | Typer | None = None,
     **kwargs,
 ) -> Typer:
-    app = Typer(name=name, **kwargs)
+    app = Typer(**kwargs, name=name)
     if cb is not None:
         app.callback()(cb)
     if cmds is not None:
@@ -75,6 +81,11 @@ def make_typer(
         for tpr in tprs:
             app.add_typer(tpr)
     return app
+
+
+def edit_typer(tpr: Typer, **kwargs) -> None:
+    for k, v in kwargs.items():
+        setattr(tpr.info, k, v)
 
 
 # MAYBE remove hardcoded names with lvl (since they are never used)
