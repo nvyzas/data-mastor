@@ -19,6 +19,7 @@ def replace_function_signature(
     func: Callable,
     other: Callable | Signature | Sequence[Callable | Signature],
     no_variadic=False,
+    exclude: list[str] | dict[str, list[Callable | Signature]] | None = None,
     edit_annotations=True,
     edit_name=False,
 ) -> Callable[..., Any]:
@@ -26,9 +27,20 @@ def replace_function_signature(
     params: dict[str, Parameter] = {}
     if isinstance(other, (Callable, Signature)):
         other = [other]
+    if exclude is None:
+        exclude = []
+    if isinstance(exclude, Sequence):
+        exclude_dict = {k: other for k in exclude}
+    else:
+        exclude_dict = exclude
     for o in other:
         sig = o if isinstance(o, Signature) else signature(o)
-        params.update(sig.parameters)
+        sig_params = {}
+        for k, v in sig.parameters.items():
+            if k in exclude_dict and o in exclude_dict[k]:
+                continue
+            sig_params[k] = v
+        params.update(sig_params)
 
     # remove variadic
     if no_variadic:
@@ -108,6 +120,7 @@ def mock_function_factory(
     id_: int | str | None = None,
     func: Callable | None = None,
     funcsig: Callable | Signature | None = None,
+    *mock_args,
     **mock_kwargs,
 ) -> Callable:
     """Function Factory (using mocks)"""
@@ -121,11 +134,11 @@ def mock_function_factory(
     mock = MagicMock(**mock_kwargs)
     mocks[id_] = mock
 
-    def _f(**kwargs):
+    def _f(*args, **kwargs):
         print(f"Running mock function '{id_}' with {kwargs}")
         mock()
         if func is not None:
-            func(**kwargs)
+            func(*args, **kwargs)
         return id_
 
     _f.__name__ = name
@@ -152,7 +165,7 @@ def nested_dict_get(
         keys = [keys]
     for i, key in enumerate(keys):
         if not isinstance(dict_, dict):
-            msg = f"Object under keys '{keys[:i]}' is not a dictionary"
+            msg = f"Object under keys {keys[:i]} is not a dictionary"
             if raise_on_error:
                 raise TypeError(msg)
             else:
@@ -160,7 +173,7 @@ def nested_dict_get(
                     print(f"WARNING: {msg}")
                 return keys[:i], expected_ret_cls()
         if key not in dict_.keys():
-            msg = f"Dict under keys '{keys[:i]}' has no key '{key}'"
+            msg = f"Dict under keys {keys[:i]} has no key '{key}'"
             if raise_on_error:
                 raise KeyError(msg)
             else:

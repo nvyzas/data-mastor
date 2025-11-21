@@ -1,10 +1,10 @@
 from collections.abc import Callable
-from functools import partial, wraps
+from functools import WRAPPER_ASSIGNMENTS, partial, wraps
 from inspect import signature
 from pathlib import Path
 from typing import Annotated, Any
 
-import yaml
+import yaml as pyyaml
 from click.core import ParameterSource
 from rich import print
 from typer import Context, Option, Typer
@@ -50,6 +50,7 @@ def traverse_typer(
     grp: TyperInfo | None = None,
     lvl: int = 0,
     callback_decorator: Callable[[Callable], Callable] | None = None,
+    verbose: bool = False,
 ) -> None:
     _tprname = tpr.info.name or (grp.name if grp and grp.name else tpr.__module__)
     tprname = f"{_tprname}({lvl})"
@@ -58,7 +59,8 @@ def traverse_typer(
             raise ValueError(f"{tpr} has a NULL callback")
         if callback_decorator is not None:
             tpr.registered_callback.callback = callback_decorator(cb)
-            print(f"Decorated callback '{tprname}'")
+            if verbose:
+                print(f"Decorated callback '{tprname}'")
     for i, cmd in enumerate(tpr.registered_commands):
         if (cb := cmd.callback) is None:
             raise ValueError(f"'{tprname}' has a NULL command")
@@ -66,7 +68,8 @@ def traverse_typer(
         cbname += f"({lvl})[{i}]"
         if callback_decorator is not None:
             cmd.callback = callback_decorator(cb)
-            print(f"Decorated command callback '{cbname}' of '{tprname}'")
+            if verbose:
+                print(f"Decorated command callback '{cbname}' of '{tprname}'")
     for i, grp in enumerate(tpr.registered_groups):
         grpname = grp.name or "grp"
         grpname += f"({lvl})[{i}]"
@@ -234,35 +237,50 @@ def update_kwargs_from_context(
 # YAML
 
 ARGS_YAMLPATH = "args.yml"
+CTX_META_KEY_YAMLARGS = "yamlargs"
+CTX_META_KEY_UNSPECIFIED = "unspecified"
+
+
+def _read_yaml(path: Path):
+    with open(path) as file:
+        content = pyyaml.safe_load(file)
+    return content
 
 
 def app_with_yaml_support(app: Typer) -> Typer:
     def parse_args_from_yaml(
         ctx: Context,
         yamlpath: Path = Path(ARGS_YAMLPATH),
-        disabled: bool = False,
+        yaml: bool = True,
     ) -> dict[str, Any]:
-        if disabled:
+        if not yaml:
             print("WARNING: yaml support is disabled. Assuming no yamlargs")
             return {}
-        if not yamlpath.exists():
-            print(f"WARNING: yaml file {yamlpath} does not exist. Assuming no yamlargs")
-            return {}
         # read yaml file
-        with open(yamlpath) as file:
-            yamlargs = yaml.safe_load(file)
+        try:
+            yamlargs = _read_yaml(yamlpath)
+        except Exception as exc:
+            print(f"WARNING: fail to read yaml due to {exc}. Assuming no yamlargs")
+            return {}
+        # check result
         if not isinstance(yamlargs, dict):
             print(f"WARNING: yaml args {yamlargs} is not a dict. Assuming no yamlargs")
             return {}
-        ctx.meta["yamlargs"] = yamlargs
-        ctx.meta["unspecified"] = {}
+        # store in ctx
+        ctx.meta[CTX_META_KEY_YAMLARGS] = yamlargs
+        ctx.meta[CTX_META_KEY_UNSPECIFIED] = {}
         return yamlargs
 
     def with_updated_kwargs(func):
+        params = signature(func).parameters
+        func_ctx_args = list(filter(lambda k: params[k].annotation is Context, params))
+        if len(func_ctx_args) > 1:
+            raise RuntimeError(f"More than one ctx args found in func: {func_ctx_args}")
+
         @wraps(func)
         def wrapper(ctx: Context, **kwargs):
-            print(f"Running wrapper of {func.__name__}")
-            if yamlargs := ctx.meta.get("yamlargs"):
+            print(f"Running wrapper of {func.__name__} with {ctx} and {kwargs}")
+            if yamlargs := ctx.meta.get(CTX_META_KEY_YAMLARGS):
                 keys = ctx.command_path.replace(".py", "").split(" ")
                 args = {}
                 try:
@@ -274,25 +292,35 @@ def app_with_yaml_support(app: Typer) -> Typer:
                 updated = update_kwargs_from_context(args, ctx, ignored=ignored)
                 kwargs.update(updated)
                 unspecified = {k: v for k, v in updated.items() if k not in kwargs}
-                ctx.meta["unspecified"][keys[-1]] = unspecified
-            kwargs["ctx"] = ctx
+                ctx.meta[CTX_META_KEY_UNSPECIFIED][keys[-1]] = unspecified
 
-            kw = {k: v for k, v in kwargs.items() if k in signature(func).parameters}
-            print(f"Running wrapped {func.__name__} with {kw}")
-            func(**kw)
+            kw = {k: v for k, v in kwargs.items() if k in params}
+            if func_ctx_args:
+                print(f"Running wrapped {func.__name__} with {ctx} and {kw}")
+                func(ctx, **kw)
+            else:
+                print(f"Running wrapped {func.__name__} with {kw}")
+                func(**kw)
 
-        replace_function_signature(wrapper, [wrapper, func], no_variadic=True)
+        def ctx_sig(ctx: Context):
+            """A dummy function to hold the context argument"""
+
+        exclude = {func_ctx_args[0]: [func]} if func_ctx_args else None
+        replace_function_signature(
+            wrapper, [ctx_sig, func], no_variadic=True, exclude=exclude
+        )
         return wrapper
 
     # decorate all typer callbacks to work with updated kwargs
     traverse_typer(app, callback_decorator=with_updated_kwargs)
 
     # root callback
-    root_callback = parse_args_from_yaml
-    if app.registered_callback and app.registered_callback.callback:
-        funcs = [parse_args_from_yaml, app.registered_callback.callback]
-        root_callback = combine_funcs(funcs)
-    app.callback(invoke_without_command=True)(root_callback)
+    if app.registered_callback and (cb := app.registered_callback.callback):
+        autoinvoke = app.registered_callback.invoke_without_command
+        combined = combine_funcs([parse_args_from_yaml, cb])
+        app.callback(invoke_without_command=autoinvoke)(combined)
+    else:
+        app.callback(invoke_without_command=True)(parse_args_from_yaml)
     return app
 
 
@@ -305,7 +333,7 @@ def get_yamldict_key(
     yamlfile = Path(yamlfile)
     if yamlfile.is_file():
         with open(yamlfile) as file:
-            yamldict = yaml.safe_load(file)
+            yamldict = pyyaml.safe_load(file)
             if key not in yamldict:
                 msg = f"Top-level key '{key}' was not found"
                 if doraise:
@@ -324,10 +352,10 @@ def get_yamldict_key(
 if __name__ == "__main__":
     f = mock_function_factory
 
-    def sigs(ctx: Context, a=1, b=1, c=1, d=1):
+    def sigs(ctxo: Context, a=1, b=1, c=1, d=1):
         pass
 
-    s = partial(sigpart, sigs, "ctx")
+    s = partial(sigpart, sigs, "ctxo")
 
     # app
     app = Typer(name="cliutils")
@@ -340,5 +368,5 @@ if __name__ == "__main__":
     subapp.command()(f("cmd2", printctx, s("c", "d")))
     app.add_typer(subapp)
 
+    # run app
     app_with_yaml_support(app)()
-    # app()
