@@ -1,5 +1,5 @@
 import random
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence, Set
 from inspect import Parameter, Signature, signature
 from typing import Any
 from unittest.mock import MagicMock
@@ -106,10 +106,10 @@ def combine_funcs(
     return combined
 
 
-def _different(collection: Collection):
+def _different(set: Set | Mapping) -> int:
     while True:
-        i = random.randint(100, 10000)
-        if i not in collection:
+        i = random.randint(555, 999)
+        if i not in set:
             return i
 
 

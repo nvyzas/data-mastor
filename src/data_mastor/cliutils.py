@@ -1,3 +1,4 @@
+import copy
 from collections.abc import Callable
 from functools import WRAPPER_ASSIGNMENTS, partial, wraps
 from inspect import Signature, signature
@@ -36,27 +37,22 @@ class Tf:
 
     apps: dict[str | int, Typer] = {}
 
-    def __init__(self, force_new: bool = False, **make_kwargs) -> None:
-        self.force_new = force_new
-        self.make_kwargs = make_kwargs or {}
+    def __init__(self, **make_kwargs) -> None:
+        self.kwargs = make_kwargs or {}
 
     def __call__(
         self,
         id_: str | int | None = None,
-        force_new: bool | None = None,
-        **edit_kwargs,
+        force_new: bool = False,
+        one_shot: bool = False,
+        **kwargs,
     ) -> Typer:
         if id_ is None:
             id_ = _different(self.apps)
-        force_new = self.force_new if force_new is None else force_new
-        if force_new:
-            app = make_typer(name=str(id_), **self.make_kwargs)
-            [edit_kwargs.pop(k, None) for k in self.make_kwargs]
-            edit_typer(app, **edit_kwargs)
+        app_or_none = None if force_new else self.apps.get(id_)
+        app = make_typer(name=str(id_), app=app_or_none, **(self.kwargs | kwargs))
+        if not one_shot:
             self.apps[id_] = app
-            return app
-        app = self.apps.setdefault(id_, make_typer(name=str(id_), **self.make_kwargs))
-        edit_typer(app, **edit_kwargs)
         return app
 
 
@@ -65,27 +61,43 @@ def make_typer(
     cb: Callable | None = None,
     cmds: list[Callable] | Callable | None = None,
     tprs: list[Typer] | Typer | None = None,
+    app: Typer | None = None,
     **kwargs,
 ) -> Typer:
-    app = Typer(**kwargs, name=name)
-    if cb is not None:
-        app.callback()(cb)
-    if cmds is not None:
-        if isinstance(cmds, Callable):
-            cmds = [cmds]
-        for cmd in cmds:
-            app.command()(cmd)
-    if tprs is not None:
-        if isinstance(tprs, Typer):
-            tprs = [tprs]
-        for tpr in tprs:
-            app.add_typer(tpr)
+    if app is None:
+        app = Typer(**kwargs, name=name)
+        if cb is not None:
+            app.callback()(cb)
+        if cmds is not None:
+            if isinstance(cmds, Callable):
+                cmds = [cmds]
+            for cmd in cmds:
+                app.command()(cmd)
+        if tprs is not None:
+            if isinstance(tprs, Typer):
+                tprs = [tprs]
+            for tpr in tprs:
+                app.add_typer(tpr)
+    edit_typer(app, cb=cb, **kwargs)
     return app
 
 
-def edit_typer(tpr: Typer, **kwargs) -> None:
+def edit_typer(
+    app: Typer,
+    cb: Callable | None = None,
+    one_shot: bool = False,
+    **kwargs,
+) -> Typer:
+    tpr = app
+    if one_shot:
+        tpr = copy.deepcopy(app)
+    # edit callback
+    if cb is not None:
+        tpr.callback()(cb)
+    # edit info
     for k, v in kwargs.items():
         setattr(tpr.info, k, v)
+    return tpr
 
 
 # MAYBE remove hardcoded names with lvl (since they are never used)
