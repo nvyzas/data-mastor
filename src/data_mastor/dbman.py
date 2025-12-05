@@ -1,45 +1,74 @@
+import importlib
+import json
 import os
 import re
 import shutil
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import pandas as pd
 import typer
 from deepdiff import DeepDiff
+from deepdiff.helper import COLORED_VIEW
+from pandas import DataFrame
+from rich import print as rprint
 from sqlalchemy import Engine, MetaData, create_engine
+from sqlalchemy.orm.decl_api import DeclarativeBase
 
-from data_mastor.cliutils import get_yamldict_key
-from data_mastor.scraper.models import Base
+from data_mastor.cliutils import app_with_yaml_support
 
 # typer app
-app = typer.Typer(invoke_without_command=True)
+app = typer.Typer(name="db", no_args_is_help=True, add_completion=False)
 
 # engine
 _engine: None | Engine = None
 
 
-def get_db_url():
-    return os.environ["DB_URL"]
+def _import_extension_module() -> ModuleType | None:
+    """Import project-specific model subclasses so that their mappers are registered."""
+    extension_module: str | None = os.environ.get("DB_MODULE", None)
+    if extension_module is not None:
+        print(f"Importing extension module: {extension_module}")
+        return importlib.import_module(extension_module)
+    return None
 
 
-def get_engine(**kwargs):
+def _get_declarative_base_class() -> type[DeclarativeBase]:
+    module = _import_extension_module()
+    keys = ["Base"] + [_ for _ in dir(module) if not _.startswith("__")]
+    for k in keys:
+        attr = getattr(module, k)
+        if not hasattr(attr, "metadata"):
+            continue
+        if isinstance(attr, type) and issubclass(attr, DeclarativeBase):
+            return attr
+    raise RuntimeError(f"There is no declarative base class for the model in {module}")
+
+
+def _get_db_url() -> str:
+    db_url = os.environ.get("DB_URL")
+    if db_url is None:
+        db_url = "sqlite:///:memory:"
+        print("WARNING: DB_URL env var is not set. Using in-memory database")
+    return db_url
+
+
+def get_engine(**kwargs) -> Engine:
+    _import_extension_module()
     global _engine
     if _engine is None:
-        _engine = create_engine(get_db_url(), **kwargs)
+        _engine = create_engine(_get_db_url(), **kwargs)
+        print(f"Using engine: {_engine.url}")
     return _engine
-
-
-# now utility function
-def _now():
-    return datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
 
 # DATABASE MANAGEMENT
 
 
-def get_tables_metadata(metadata_obj: MetaData) -> dict[str, dict[str, str]]:
+def _tables_dict(metadata_obj: MetaData) -> dict[str, dict[str, str]]:
     ret = {}
     tablesdict = metadata_obj.tables
     for tablename, table in tablesdict.items():
@@ -47,23 +76,130 @@ def get_tables_metadata(metadata_obj: MetaData) -> dict[str, dict[str, str]]:
     return ret
 
 
-@app.command(name="printschema")
-def print_tables_metadata():
-    engine = get_engine()
-    db_metadata = MetaData()
-    db_metadata.reflect(bind=engine)
-    db_md = get_tables_metadata(db_metadata)
-    print(db_md)
+def _now() -> str:
+    return datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+
+def _create_backup(db_filepath: Path) -> Path:
+    backup_filename = db_filepath.stem + "_" + _now() + ".bak.db"
+    backup_filepath = Path("backups") / backup_filename
+    shutil.copy2(db_filepath, backup_filepath)
+    print(f"Created database backup: {str(backup_filepath.absolute())}")
+    return backup_filepath
+
+
+def _restore_backup(
+    backup_filepath: Path, db_filepath: Path, extension_prefix: str = ""
+) -> None:
+    target_filepath = backup_filepath.with_stem(backup_filepath.stem + extension_prefix)
+    shutil.move(db_filepath, target_filepath)
+    shutil.move(backup_filepath, db_filepath)
+    print(f"Recreated database backup: {target_filepath.absolute()}")
+    print(f"Restored database from previous backup: {backup_filepath.absolute()}")
+
+
+def _try_safely(func: Callable, ctx: typer.Context) -> None:
+    db_filepath = ctx.obj["db_filepath"]
+    backup = ctx.params["backup"]
+    write_db = ctx.params["write_db"]
+    if not write_db and not backup:
+        raise ValueError("Dry run (no write_db) requires backup")
+
+    backup_filepath = _create_backup(db_filepath) if backup else None
+
+    print(f"Running safely: {func.__name__}")
+    try:
+        func()
+    except Exception as exc:
+        if not backup:
+            raise
+        print(f"Exception occured: {exc}")
+        if backup_filepath is not None:
+            _restore_backup(backup_filepath, db_filepath, ".err")
+    else:
+        if not write_db and backup_filepath is not None:
+            _restore_backup(backup_filepath, db_filepath, ".dryrun")
+
+
+@app.callback()
+def callback(ctx: typer.Context):
+    # init ctx obj to be shared
+    ctx.obj = ctx.obj or {}
+
+    # get engine
+    ctx.obj["engine"] = get_engine()
+
+    # get db filepath
+    db_url = str(ctx.obj["engine"].url)
+    if not db_url.startswith("sqlite:///"):
+        raise RuntimeError(f"Invalid db url: {db_url}")
+    db_filepath = Path(db_url.replace("sqlite:///", "", count=1))
+    ctx.obj["db_filepath"] = db_filepath
 
 
 @app.command()
-def migrate(yamlconf_file: Path = Path("conf.yml")):
+def recreate(ctx: typer.Context, backup=True, write_db=False):
+    engine = ctx.obj["engine"]
+
+    basecls = _get_declarative_base_class()
+
+    def _recreate():
+        print("Recreating")
+        basecls.metadata.drop_all(engine)
+        basecls.metadata.create_all(engine)
+
+    _try_safely(_recreate, ctx)
+
+
+@app.command()
+def dbmd(ctx: typer.Context, echo=True):
+    engine = ctx.obj["engine"]
+    db_metadata = MetaData()
+    db_metadata.reflect(bind=engine)
+    db_md = _tables_dict(db_metadata)
+    if echo:
+        rprint(db_md)
+    return db_md
+
+
+@app.command()
+def srcmd(echo=True):
+    basecls = _get_declarative_base_class()
+    src_metadata = _tables_dict(basecls.metadata)
+    if echo:
+        rprint(src_metadata)
+    return src_metadata
+
+
+@app.command()
+def diff(ctx: typer.Context, echo=True):
+    db_md = dbmd(ctx, echo=False)
+    src_md = srcmd(echo=False)
+    diffs = DeepDiff(
+        db_md,
+        src_md,
+        ignore_order=True,
+        view=COLORED_VIEW,
+        exclude_paths=["root['alembic_version']"],
+    )
+    if echo:
+        print(diffs)
+    return db_md, src_md, diffs
+
+
+@app.command()
+def migrate(
+    ctx: typer.Context,
+    backup=True,
+    write_db=False,
+    renames_str: str | None = None,
+):
     """Helper for database migration/creation.
 
     Useful for databases with limited migration capabilities e.g., sqlite.\n
     Supported operations:\n
-    - table rename -> use conf.yml:renames:oldtablename:oldtablename:newtablename\n
-    - column rename -> use conf.yml:renames:tablename:oldcolumnname:newcolumnname\n
+    - table rename -> use args.yml:renames:oldtablename:oldtablename:newtablename\n
+    - column rename -> use args.yml:renames:tablename:oldcolumnname:newcolumnname\n
     - table removal -> detected automatically by comparing db with this file\n
     - column removal -> detected automatically by comparing db with this file\n
     - table add -> handled by metadata.create_all\n
@@ -73,58 +209,19 @@ def migrate(yamlconf_file: Path = Path("conf.yml")):
     For other kinds of operations:\n
     https://alembic.sqlalchemy.org/en/latest/autogenerate.html
     """
-    # parse args
-    args = get_yamldict_key(yamlconf_file, "db")
-    renames = args.get("renames", {}) or {}
-    dont_store = args.get("dont_store", True) or True
-    args_dict = {"renames": renames, "dont_store": dont_store}
-    print(f"Args: {args_dict}")
+    # get engine
+    engine = ctx.obj["engine"]
 
-    # determine db path
-    db_url = get_db_url()
-    if db_url.startswith("sqlite:///"):
-        sqlite_db_path = db_url.replace("sqlite:///", "", count=1)
-    else:
-        raise RuntimeError
-
-    # create engine
-    engine = get_engine()
-
-    # SCENARIO 1: create new blank db
-    if not Path(sqlite_db_path).exists():
-        Base.metadata.create_all(engine)
-        print(f"Created database: {db_url}")
-        return
-
-    # get db tables
-    db_metadata = MetaData()
-    db_metadata.reflect(bind=engine)
-    db_md = get_tables_metadata(db_metadata)
-
-    # SCENARIO 2: recreate blank db (with the most recent schema)
-    if not db_md:
-        Base.metadata.drop_all(engine)
-        Base.metadata.create_all(engine)
-        print(f"Recreated empty database {db_url}")
-        return
-
-    # SCENARIO 3: recreate db using data from old db
-
-    # check diffs
-    sc_md = get_tables_metadata(Base.metadata)
-    diff = DeepDiff(
-        db_md, sc_md, ignore_order=True, exclude_paths=["root['alembic_version']"]
-    )
-    print("Diffs of existing db vs file schema:")
-    print(diff.pretty())
-    if not diff:
-        print("There are no diffs. Exiting.")
-        return
+    # calculate database metadata, source metadata, and their diffs
+    db_md, src_md, diffs = diff(ctx, echo=False)
 
     # determine removed tables/columns
+    renames: dict[str, dict[str, str]] = {}
+    if renames_str is not None:
+        renames = json.loads(renames_str)
     removed_tables = set()
     removed_columns: dict[str, Any] = {}
-    for item in diff["dictionary_item_removed"]:
+    for item in diffs.get("dictionary_item_removed", []):
         parts = re.findall(r"\[(.*?)\]", item)
         if len(parts) == 1:
             table = parts[0].replace("'", "")
@@ -148,7 +245,7 @@ def migrate(yamlconf_file: Path = Path("conf.yml")):
 
     # store existing table data first, so that next steps don't run in case of error
     print("Storing existing data")
-    data = {}
+    data: dict[str, DataFrame] = {}
     for tname in db_md:
         if tname == "alembic_version":
             print(f"Skipping table '{tname}'")
@@ -165,7 +262,7 @@ def migrate(yamlconf_file: Path = Path("conf.yml")):
         if not isinstance(new_tname, str):
             print(f"New tablename should be a string, not {type(new_tname)}")
         # make sure table exists in the new schema
-        if new_tname not in sc_md:
+        if new_tname not in src_md:
             raise ValueError(f"Table '{tname}'{renamed_to}not in schema")
         # determine included columns (those that were not removed)
         included_cols = db_md[tname].keys() - removed_columns.get(tname, {})
@@ -192,47 +289,17 @@ def migrate(yamlconf_file: Path = Path("conf.yml")):
         print(f"Stored data ({num_cols} columns) of table '{tname}'{renamed_to}")
     print(f"Unused renames from yaml: {renames}")
 
-    # backup
-    backup_dirpath = Path("backup")
-    backup_filename = sqlite_db_path.split(".")[0] + "_" + _now() + ".bak.db"
-    backup_filepath = backup_dirpath / backup_filename
-    shutil.copy2(sqlite_db_path, backup_filepath)
-    print(f"Created database backup: {str(backup_filepath.absolute())}")
-
-    # recreate
-    Base.metadata.drop_all(engine)
-    Base.metadata.create_all(engine)
-    print(f"Recreated database: {sqlite_db_path}")
-
-    # load data using the new schema
-    exc_occured = False
-    for tname, df in data.items():
-        if tname == "alembic_version":
-            continue
-        try:
+    # do the migration
+    def _migrate():
+        recreate(ctx)
+        for tname, df in data.items():
+            if tname == "alembic_version":
+                continue
             df.to_sql(tname, engine, index=False, if_exists="append")
-        except Exception as exc:
-            exc_occured = True
-            print(f"Failed to restore data into table '{tname}' due to {exc}")
-            break
-        print(f"Successfully restored data into table '{tname}'")
+            print(f"Restored data into table '{tname}'")
 
-    if exc_occured:
-        error_filepath = backup_filepath.with_stem(backup_filepath.stem + ".err")
-        shutil.move(sqlite_db_path, error_filepath)
-        shutil.move(backup_filepath, sqlite_db_path)
-        print("Replaced database with the backup because an exception occured")
-        print(f"Erroneous database path: '{error_filepath}'")
-        return
-
-    if dont_store:
-        dryrun_filepath = backup_filepath.with_stem(backup_filepath.stem + ".dr")
-        shutil.move(sqlite_db_path, dryrun_filepath)
-        shutil.move(backup_filepath, sqlite_db_path)
-        print("Replaced database with the backup because it's a dry-run")
-        print(f"Dry-run database path: '{dryrun_filepath}'")
-        return
+    _try_safely(_migrate, ctx)
 
 
 if __name__ == "__main__":
-    app()
+    app_with_yaml_support(app)()

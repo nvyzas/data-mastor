@@ -1,8 +1,7 @@
-import inspect
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, TypeGuard, cast
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, TypeGuard, cast
 
 import typer
 import yaml
@@ -13,10 +12,26 @@ from scrapy.crawler import CrawlerProcess
 from scrapy.settings import SETTINGS_PRIORITIES, Settings
 from scrapy.utils.project import get_project_settings
 
-from data_mastor.cliutils import Opt, parse_yamlargs, yaml_get
+from data_mastor.cliutils import (
+    Opt,
+    app_with_yaml_support,
+    nested_dict_get,
+    read_yaml,
+    replace_function_signature,
+)
 from data_mastor.scraper.middlewares import PrivacyCheckerDlMw, ResponseSaverSpMw
-from data_mastor.scraper.pipelines import TIMESTAMP_FMT, ListingStorer, SourceStorer
-from data_mastor.scraper.utils import DLMW_KEY, DLMWBASE_KEY, between_middlewares
+from data_mastor.scraper.pipelines import (
+    TIMESTAMP_FMT,
+    ListingStorer,
+    SourceStorer,
+    Storer,
+)
+from data_mastor.scraper.utils import (
+    DLMW_KEY,
+    DLMWBASE_KEY,
+    SPMW_KEY,
+    between_middlewares,
+)
 
 if TYPE_CHECKING:
     pass
@@ -44,22 +59,24 @@ class Baze(Spider):
     # required in get_yaml_key(cls.name, ...)
     name = "baze"
     # make settings and spiderargs accessible to typer callback AND typer command
-    _settings: dict[str, Any] = {}
-    _spiderargs: dict[str, Any] = {}
+    _settings: ClassVar[dict[str, Any]] = {}
+    _spiderargs: ClassVar[dict[str, Any]] = {}
     # for testing the cli, by exiting before crawling
-    _test_cli: bool
+    _test_cli: ClassVar[bool]
     # serves as a single source of truth for default spiderarg/setting values
     # applied in both: scrapy crawl CLI (__init__/from_crawler), and custom CLI (_cli)
     # REF replace specs with pydantic classes
-    sett_specs: dict[str, Any] = {
+    sett_specs: ClassVar[dict[str, Any]] = {
         "OUT_DIR": f"out/{name}/{timestamp}",
         "DONT_STORE": False,  # DO make it NO_WRITE_DB
         "NOW": timestamp,
     }
-    sparg_specs: dict[str, Any] = {"url": None, "save_html": False}
+    sparg_specs: ClassVar[dict[str, Any]] = {"url": None, "save_html": False}
     # explicitly declare default classattr value assumed by OffsiteDownloadMiddleware
     # needed here so that type-checkers know the classattr exists
-    allowed_domains: list[str] = []
+    allowed_domains: ClassVar[list[str]] = []
+
+    storercls: type[Storer] = Storer
 
     def __init__(self, name=None, **kwargs):
         # run default init first to assign name, spiderargs, and start_urls to self
@@ -184,12 +201,26 @@ class Baze(Spider):
         [dynamic_settings.pop(k) for k in overriden]
         spider.settings.update(dynamic_settings, priority="spider")
 
+        # apply pipelines
+        if cls.__name__.endswith("Lst"):
+            cls.storercls = spider.settings.get("LISTING_STORER", ListingStorer)
+        elif cls.__name__.endswith("Src"):
+            cls.storercls = spider.settings.get("SOURCE_STORER", SourceStorer)
+        else:
+            raise RuntimeError(f"Class name should end in Lst/Src, unlike {cls}")
+        spider.settings["ITEM_PIPELINES"][cls.storercls] = 500
+
         # apply middlewares
         dlmw_base = spider.settings[DLMWBASE_KEY]
         dlmw = spider.settings[DLMW_KEY]
+        spmw = spider.settings[SPMW_KEY]
 
-        # Only add PrivacyCheckerDLMW if not in local mode
-        if not spider._local_mode:
+        # apply ResponseSaver (Spider Middleware)
+        if spider.local_mode or spider.save_html:
+            spmw[ResponseSaverSpMw] = 950
+
+        # apply PrivacyChecker (Downloader Middleware)
+        if not spider.local_mode:
             pos = between_middlewares(
                 {**dlmw_base, **dlmw},
                 [
@@ -200,11 +231,8 @@ class Baze(Spider):
             )
             dlmw[PrivacyCheckerDlMw] = pos
 
-        if spider.save_html:
-            dlmw[ResponseSaverSpMw] = 950
-
-        # effectively disable OffsiteDownloadMiddleware if scraping locally
-        if spider._local_mode:
+        # effectively disable OffsiteDownloadMiddleware
+        if spider.local_mode:
             cls.allowed_domains = []
             print(f"Allowed domains were set to: {cls.allowed_domains}")
 
@@ -238,6 +266,17 @@ class Baze(Spider):
         # return
         return spider
 
+    @classmethod
+    def main(cls) -> None:
+        # create process with cli and project settings
+        project_settings = get_project_settings()
+        for key, value in cls._settings.items():
+            project_settings.set(key, value, priority="cmdline")
+        process = CrawlerProcess(settings=project_settings)
+        # crawl with spiderargs
+        process.crawl(cls, **cls._spiderargs)
+        process.start()
+
     @staticmethod
     def _verbose_update(
         updated: dict, updater: dict, updater_name="", overwrite=True
@@ -268,8 +307,10 @@ class Baze(Spider):
     ) -> None:
         # update _test_cli
         cls._test_cli = test_cli
+
         # define helper variable type
         dct: dict[str, Any]
+
         # apply 'scrapy crawl' CLI settings
         dct = {}
         for s in crawlsetts or []:
@@ -300,14 +341,7 @@ class Baze(Spider):
 
     @classmethod
     def _cli_full(cls, ctx: typer.Context, **kwargs) -> None:
-        # make sure args are reset (helps in testing)
-        cls._spiderargs = {}
-        cls._settings = {}
-
-        # apply yamlargs
-        yamlargs = parse_yamlargs(ctx, key=cls.name, edit_ctx_values=False)
-        Baze._verbose_update(kwargs, yamlargs, "yamlargs")
-
+        print("Running _cli_full")
         for cm in [cls._cli_basic, cls._cli_sub, cls._cli]:
             kw = {k: v for k, v in kwargs.items() if k in cm.__annotations__}
             if "ctx" in cm.__annotations__:
@@ -317,32 +351,35 @@ class Baze(Spider):
                 print(kw)
                 cast(Callable[..., Any], cm)(**kw)
             except NotImplementedError:
-                print("WARNING: not implemented")
+                print(f"WARNING: '{cm.__name__}' is not implemented")
                 pass
             [kwargs.pop(k) for k in kw if k != "ctx"]
         kwargs.pop("ctx", None)
 
+        # NEXT read unspecified settings from ctx.args
         # apply remaining settings (non class-specified that are coming from yaml)
         dct = {k: v for k, v in kwargs.items() if k.isupper()}
-        Baze._verbose_update(cls._settings, dct, "unspecified yaml setting", False)
+        Baze._verbose_update(cls._settings, dct, "unspecified setting", False)
         [kwargs.pop(k) for k in dct]
         # apply remaining spiderargs (non class-specified that are coming from yaml)
         dct = {k: v for k, v in kwargs.items() if k not in cls._spiderargs}
-        Baze._verbose_update(cls._spiderargs, dct, "unspecified yaml spiderarg", False)
+        Baze._verbose_update(cls._spiderargs, dct, "unspecified spiderarg", False)
         [kwargs.pop(k) for k in dct]
 
         # unused args
         if kwargs:
-            print(f"WARNING: Unused args remain: {kwargs}")
+            print(f"WARNING: There are remaining (unused) args: {kwargs}")
             kwargs = {}
 
-        # delete default, non-explicit settings (to be reapplied in from_crawler)
+        # delete not-explicitly-given settings
+        # (with default values to be reapplied in from_crawler)
         for k, v in cls.all_sett_specs().items():
             if ctx.get_parameter_source(k) == ParameterSource.COMMANDLINE:
                 continue
             if k in cls._settings and v == cls._settings[k]:
                 del cls._settings[k]
-        # delete default, non-explicit spiderargs (to be reapplied in __init__)
+        # delete not explicitly-given spiderargs
+        # (with default values to be reapplied in __init__)
         for k, v in cls.all_sparg_specs().items():
             if ctx.get_parameter_source(k) == ParameterSource.COMMANDLINE:
                 continue
@@ -353,14 +390,10 @@ class Baze(Spider):
         cls._cli_main()
 
     @classmethod
-    def used_args(cls):
-        return {**cls._settings, **cls._spiderargs}
-
-    @classmethod
     def _cli_main(cls) -> None:
         # print args
         print("Used args:")
-        print(cls.used_args())
+        print({**cls._settings, **cls._spiderargs})
         # validate args
         for key, value in cls._settings.items():
             # DO check settings types (using scrapy scrapy/utils/conf.py?)
@@ -378,58 +411,39 @@ class Baze(Spider):
         cls.main()
 
     @classmethod
-    def main(cls) -> None:
-        # create process with cli and project settings
-        project_settings = get_project_settings()
-        for key, value in cls._settings.items():
-            project_settings.set(key, value, priority="cmdline")
-        process = CrawlerProcess(settings=project_settings)
-        # crawl with spiderargs
-        process.crawl(cls, **cls._spiderargs)
-        process.start()
+    def _cli_cmdname(cls) -> str:
+        return cls.name.replace("_", "")
 
     @classmethod
     def cli_app(cls) -> typer.Typer:
         """Permits conveniently running typer.testing.CliRunner().invoke in spider test
         modules by providing its first argument, the typer app object."""
-        app = typer.Typer()
-        # define docstr here rather than in func doc to protect it from docformatter
+
+        # define app and its help string here
+        # don't use than as docstring of 'func' this protects it from docformatter
         helpstr = f"""
         CLI interface to {cls.__name__}.main (buffed version of 'scrapy crawl' CLI)\n
         Supports the following:\n
-        1) Reading args/settings from a yaml (config) file\n
+        1) Reading args (spiderargs or settings) from a yaml (config) file\n
         2) Using --arg/-a and --set/-s options similarly to 'scrapy crawl'\n
         3) Spider-specific arguments that offer help, validation, and default values\n.
         """
+        app = typer.Typer(
+            name=cls._cli_cmdname(), help=helpstr, invoke_without_command=True
+        )
 
         # create a wrapper function so that we can give it a __signature__
         # (not possible to set __signature__ on a classmethod)
-        def cli_full(**kwargs):
+        def func(**kwargs) -> None:
             cls._cli_full(**kwargs)
 
-        def dummy_func_with_ctx(ctx: typer.Context):
-            pass
+        # assign to new variable so that typer sees the (edited) signature correctly
+        sig_funcs = (cls._cli_full, cls._cli_basic, cls._cli_sub, cls._cli)
+        newfunc = replace_function_signature(func, sig_funcs, no_variadic=True)
 
-        fullsig_dict: dict[str, Any] = {}
-        for cm in [cls._cli_basic, cls._cli_sub, cls._cli]:
-            sig = inspect.signature(cast(Callable[..., Any], cm))
-            fullsig_dict.update(sig.parameters)
-        ctx_sig = {"ctx": inspect.signature(dummy_func_with_ctx).parameters["ctx"]}
-        full_signature = inspect.Signature([*{**ctx_sig, **fullsig_dict}.values()])
-        cli_full.__signature__ = full_signature  # type: ignore
-        annotations = {
-            name: param.annotation for name, param in full_signature.parameters.items()
-        }
-        cli_full.__annotations__ = annotations
-        app.command(help=helpstr)(cli_full)
+        # apply combined command and return the app
+        app.command(name=cls._cli_cmdname(), help=cls.__doc__)(newfunc)
         return app
-
-    @classmethod
-    def run_cli(cls) -> None:
-        """Permits convenienty runnning cls.main from spider subclass modules via
-        Subclass.cli(); no the need to import typer and use typer.run(subclass.main)."""
-        app = cls.cli_app()
-        app()
 
     @classmethod
     def get_samples(cls):
@@ -439,11 +453,16 @@ class Baze(Spider):
     def itemcls(cls):
         raise NotImplementedError
 
+    @classmethod
+    def reset(cls):
+        cls._settings = {}
+        cls._spiderargs = {}
+
 
 class Meta(type):
     """Metaclass enforcing assumptions for the subclasses of Baze's subclasses."""
 
-    def __new__(cls, name, bases, dct):
+    def __new__(cls, name: str, bases, dct):
         c = super().__new__(cls, name, bases, dct)
         if not c.__base__:
             raise RuntimeError(f"No baseclass for {c}")
@@ -476,16 +495,15 @@ class Meta(type):
             return c
 
         if "info_file" not in c.__dict__:
-            info_file = "info.yml"
+            info_file = Path("info.yml")
         else:
-            info_file = c.__dict__["info_file"]
+            info_file = Path(c.__dict__["info_file"])
 
-        if not info_file:
+        if not info_file.is_file():
             return c
         codename = name[:-3].lower()
-        info = yaml_get(info_file, [codename])
-        if not info:
-            print(f"Could not find info for shop '{codename}'")
+        info_contents = read_yaml(info_file)
+        _, info = nested_dict_get(info_contents, [codename], raise_on_error=False)
         spider_info = info.get(spidertype.lower(), {})
         # set custom classvars: shop name, html_fields
         setattr(c, "shop", info.get("name", codename))
@@ -508,9 +526,7 @@ class BazeLst(Baze, metaclass=Meta):
         # make sure start_urls is not empty
         # don't enforce this in spider.__init__ to allow for testing flexibility
         if not spider.start_urls:
-            raise ValueError(
-                "self.start_urls is empty. Please provide the 'url' spiderarg"
-            )
+            raise ValueError("self.start_urls is empty, set it with the 'url' arg")
         return spider
 
 
@@ -589,13 +605,13 @@ class BazeSrc(Baze, metaclass=Meta):
         Baze._verbose_update(cls._spiderargs, dct, "specspargs")
 
 
+class ShopSrc(BazeSrc):
+    # custom_settings={} # DO test custom settings
+
+    @classmethod
+    def _cli(cls) -> None:
+        print("shopsrc cli")
+
+
 if __name__ == "__main__":
-
-    class ShopSrc(BazeSrc):
-        # custom_settings={} # DO test custom settings
-
-        @classmethod
-        def _cli(cls) -> None:
-            print("shopsrc cli")
-
-    ShopSrc.run_cli()
+    app_with_yaml_support(ShopSrc.cli_app())()

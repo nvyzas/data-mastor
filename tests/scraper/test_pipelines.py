@@ -1,7 +1,7 @@
 import pytest
 from scrapy.exceptions import DropItem
 from sqlalchemy import select
-from sqlalchemy.orm.session import Session, sessionmaker
+from sqlalchemy.orm.session import Session
 
 from data_mastor.scraper.models import Listing, Source
 from data_mastor.scraper.pipelines import ListingStorer, SourceStorer, process_items
@@ -22,20 +22,16 @@ class TestSourceStorer:
     def pipe(self) -> SourceStorer:
         return SourceStorer()
 
-    def test_pipe_normal(
-        self, sessmkr: sessionmaker[Session], pipe: SourceStorer
-    ) -> None:
-        assert len(sessmkr().scalars(select(Source)).all()) == 0
+    def test_pipe_normal(self, sess: Session, pipe: SourceStorer) -> None:
+        assert len(sess.scalars(select(Source)).all()) == 0
         process_items([s0, s1, s2], pipe)
-        assert len(sessmkr().scalars(select(Source)).all()) == 3
+        assert len(sess.scalars(select(Source)).all()) == 3
 
-    def test_pipe_broken_hierarchy(
-        self, sessmkr: sessionmaker[Session], pipe: SourceStorer
-    ) -> None:
-        assert len(sessmkr().scalars(select(Source)).all()) == 0
+    def test_pipe_broken_hierarchy(self, sess: Session, pipe: SourceStorer) -> None:
+        assert len(sess.scalars(select(Source)).all()) == 0
         with pytest.raises(DropItem):
             process_items([s1, s2], pipe)
-        assert len(sessmkr().scalars(select(Source)).all()) == 0
+        assert len(sess.scalars(select(Source)).all()) == 0
 
 
 l1 = ListingItem("text1", "1")
@@ -48,10 +44,10 @@ class TestListingStorer:
     def pipe(self) -> ListingStorer:
         return ListingStorer()
 
-    def test_lstpipe(self, sessmkr: sessionmaker[Session], pipe: ListingStorer) -> None:
-        assert len(sessmkr().scalars(select(Listing)).all()) == 0
+    def test_lstpipe(self, sess: Session, pipe: ListingStorer) -> None:
+        assert len(sess.scalars(select(Listing)).all()) == 0
         process_items(listings, pipe)
-        assert len(sessmkr().scalars(select(Listing)).all()) == 2
+        assert len(sess.scalars(select(Listing)).all()) == 2
 
 
 if __name__ == "__main__":

@@ -1,19 +1,19 @@
 import json
-import logging
 from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Self
 
 import pandas as pd
-import typer
 from scrapy import Spider
 from scrapy.exceptions import DropItem
 from sqlalchemy.orm import sessionmaker
+from typer import Typer
 
-from data_mastor.cliutils import get_yamldict_key
+from data_mastor.cliutils import app_with_yaml_support
 from data_mastor.dbman import get_engine
 from data_mastor.scraper.models import (
+    Base,
     Listing,
     Product,
     Source,
@@ -25,18 +25,20 @@ TIMESTAMP_FMT = "%Y-%m-%d_%H-%M-%S"
 
 
 # DO make it into a generic class
-class Storer[TEntity: Listing | Source, TItem: ListingItem | SourceItem]:
+class Storer[TEntity: Base, TItem: ListingItem | SourceItem]:
+    entitycls: type[TEntity]
+
     def __init__(
         self,
-        entitycls: type[TEntity],
         now: str | None = None,
         dont_store: bool = False,
     ) -> None:
-        self.now = datetime.strptime(now, TIMESTAMP_FMT) if now else datetime.now()
-        self.dont_store = dont_store
-        self.entitycls = entitycls
+        # check entitycls
         if not issubclass(self.entitycls, (Listing, Source)):
             raise TypeError(f"self.entitycls ({self.entitycls}) is not Listing/Source")
+        # set attrs
+        self.now = datetime.strptime(now, TIMESTAMP_FMT) if now else datetime.now()
+        self.dont_store = dont_store
         # db session
         self._added: list[TEntity] = []
         self._deleted: list[TEntity] = []
@@ -45,14 +47,15 @@ class Storer[TEntity: Listing | Source, TItem: ListingItem | SourceItem]:
 
     # meant to be called only by a Storer subclass, not (directly) by scrapy
     @classmethod
-    def from_crawler(cls, crawler, entitycls: type[TEntity] | None = None) -> Self:
-        if entitycls is None:
-            raise TypeError("entitycls is None")
+    def from_crawler(cls, crawler) -> Self:
         return cls(
-            entitycls,
             now=crawler.settings.get("NOW"),
             dont_store=crawler.settings.get("DONT_STORE"),
         )
+
+    def _log_num_entities(self, spider: Spider) -> None:
+        num = self.entitycls.num_entities(self._session)
+        spider.logger.info(f"Number of entities on pipeline start: {num}")
 
     def _add_to_session(self, entity, spider: Spider) -> None:
         try:
@@ -79,10 +82,6 @@ class Storer[TEntity: Listing | Source, TItem: ListingItem | SourceItem]:
         self._session.expunge_all()
         self._added = []
         # DO also test session flush/commit
-
-    def _log_num_entities(self, spider: Spider) -> None:
-        num = self.entitycls.num_entities(self._session)
-        spider.logger.info(f"Number of entities on pipeline start: {num}")
 
     def open_spider(self, spider: Spider) -> None:
         spider.logger.debug(f"Running {type(self).__name__} open_spider")
@@ -127,17 +126,18 @@ class Storer[TEntity: Listing | Source, TItem: ListingItem | SourceItem]:
 
 
 class ListingStorer(Storer[Listing, ListingItem]):
-    def __init__(self, entitycls: type[Listing] = Listing, **kwargs) -> None:
-        super().__init__(entitycls, **kwargs)
+    entitycls = Listing
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
         self.products = pd.read_sql_table(Product.__tablename__, self._engine)
 
-    # entitycls arg is included just for conformity with signature of base method
     @classmethod
-    def from_crawler(cls, crawler, entitycls: type[Listing] | None = None):
-        entitycls_ = crawler.settings.get("LISTING_CLASS", Listing)
-        if entitycls_ == Listing:
-            logging.getLogger("crawler").warning(f"Using default entitycls: {Listing}")
-        return super().from_crawler(crawler, entitycls=entitycls_)
+    def from_crawler(cls, crawler) -> Self:
+        cls.entitycls = crawler.settings.get("LISTING_CLASS", cls.entitycls)
+        if not issubclass(cls.entitycls, Listing):
+            raise TypeError(f"{cls.entitycls} is not a Listing subclass")
+        return super().from_crawler(crawler)
 
     def mapper(self, item: ListingItem) -> Listing:
         # parse price attributes from item
@@ -159,7 +159,7 @@ class ListingStorer(Storer[Listing, ListingItem]):
         # return
         return listing
 
-    def process_item(self, item: ListingItem, spider: Spider) -> ListingItem:
+    def process_item(self, item, spider: Spider):
         # create a copy to be returned (so that the output feeds are same as input)
         item_ret = replace(item)
 
@@ -173,11 +173,21 @@ class ListingStorer(Storer[Listing, ListingItem]):
         return item_ret
 
 
-class SourceStorer(Storer):
-    def __init__(self, entitycls: type[Source] = Source, **kwargs) -> None:
-        super().__init__(entitycls, **kwargs)
+class SourceStorer(Storer[Source, SourceItem]):
+    entitycls = Source
 
-    def process_item(self, item: SourceItem, spider: Spider) -> SourceItem:
+    def __init__(self, entitycls: type[Source] = Source, **kwargs) -> None:
+        super().__init__(**kwargs)
+
+    # entitycls arg is included just for conformity with signature of base method
+    @classmethod
+    def from_crawler(cls, crawler) -> Self:
+        cls.entitycls = crawler.settings.get("SOURCE_CLASS", cls.entitycls)
+        if not issubclass(cls.entitycls, Source):
+            raise TypeError(f"{cls.entitycls} is not a Source subclass")
+        return super().from_crawler(crawler)
+
+    def process_item(self, item, spider: Spider) -> SourceItem:
         # create copy to be returned
         it = replace(item)
 
@@ -215,13 +225,15 @@ class SourceStorer(Storer):
 
 
 def process_json_feed(json_path: str | Path, **pipe_kwargs) -> None:
+    json_path = Path(json_path)
+    print(f"Processing feeds from {json_path}")
     # read feed
     with open(json_path) as file:
         feed = json.load(file)
     # init pipeline
     pipe: SourceStorer | ListingStorer
     items: list[SourceItem] | list[ListingItem]
-    feedpath = str(Path(json_path).absolute())
+    feedpath = str(json_path.absolute())
     if "_src/" in feedpath:
         pipe = SourceStorer(**pipe_kwargs)
         items = [SourceItem(**dct) for dct in feed]
@@ -255,16 +267,14 @@ def process_items(items: list, pipe: Storer):
     return processed
 
 
-def main(args_yaml: Path = Path("conf.yml")):
-    # parse args
-    args = get_yamldict_key(args_yaml, "pipelines")
-    dont_store = args.get("dont_store", True)
-    path = Path(args["path"]).absolute()
+def main(path: Path = Path("."), dont_store: bool = True) -> None:
+    print(f"Running main with: path={path}, dont_store={dont_store}")
     json_filepaths = [path] if path.is_file() else list(path.rglob("feed.json"))
-    # process
     for f in json_filepaths:
         process_json_feed(f, dont_store=dont_store)
 
 
 if __name__ == "__main__":
-    typer.run(main)
+    app = Typer(invoke_without_command=True)
+    app.callback()(main)
+    app_with_yaml_support(app)()

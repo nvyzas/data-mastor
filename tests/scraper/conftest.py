@@ -1,12 +1,11 @@
-# pyright: reportUnusedImport=false
 from data_mastor.scraper.testing import (
-    configure_spidercls,
+    configured_spidercls,
     engine,
     entities,
-    extension_modules,
     fill_with_entities,
     gatherercls,
     reset_db,
+    sess,
     sessmkr,
     setup_db_url,
     spidercls,

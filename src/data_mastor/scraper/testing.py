@@ -4,7 +4,6 @@ import logging
 import os
 from collections.abc import Iterable
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 import pytest
@@ -12,10 +11,12 @@ from sqlalchemy import Engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.orm.session import Session
 
-from data_mastor.cliutils import get_yamldict_key
+from data_mastor.cliutils import read_yaml
 from data_mastor.dbman import get_engine
 from data_mastor.scraper.models import Base
 from data_mastor.scraper.spiders import USED_ARGS_FILENAME, Baze, timestamp
+from data_mastor.scraper.utils import configure_scrapy_logging_levels
+from data_mastor.utils import nested_dict_get
 
 # dummy
 importable_fixture = "dummy"
@@ -31,33 +32,7 @@ def setup_db_url() -> None:
 
 
 @pytest.fixture(scope="session")
-def extension_modules() -> list[ModuleType | str]:
-    """Return a list of importable module paths whose model mappers should be registered
-    before creating the test database.
-
-    Override this fixture in test modules to include project extensions (e.g.
-    ['robinfood.mdl']).
-    """
-    return []
-
-
-@pytest.fixture(scope="session")
-def engine(setup_db_url, extension_modules: list[ModuleType | str]):
-    """Create a new database engine for the test session."""
-
-    # import project-specific model subclasses so their mappers are registered
-    if extension_modules:
-        import importlib
-
-        for ext in extension_modules:
-            if isinstance(ext, str):
-                ext = importlib.import_module(ext)
-            elif isinstance(ext, ModuleType):
-                pass  # module is already imported
-            else:
-                raise TypeError("Ignoring unsupported model_extension entry: %r", ext)
-            print(f"Using model-extension module '{ext.__name__}'")
-
+def engine(setup_db_url):
     kwargs = {"connect_args": {"check_same_thread": False}}
     engine = get_engine(**kwargs)
     print(f"Engine URL: {engine.url}")
@@ -69,6 +44,12 @@ def engine(setup_db_url, extension_modules: list[ModuleType | str]):
 @pytest.fixture(scope="session")
 def sessmkr(engine: Engine):
     yield sessionmaker(bind=engine)
+
+
+@pytest.fixture(scope="function")
+def sess(sessmkr: sessionmaker[Session]):
+    with sessmkr() as s:
+        yield s
 
 
 @pytest.fixture
@@ -85,7 +66,7 @@ def entities() -> list[Base]:
 
 @pytest.fixture
 def fill_with_entities(
-    reset_db, sessmkr: sessionmaker[Session], entities: Iterable[Base]
+    reset_db: None, sessmkr: sessionmaker[Session], entities: Iterable[Base]
 ) -> None:
     with sessmkr() as session:
         session.add_all(entities)
@@ -96,7 +77,7 @@ def fill_with_entities(
 
 @pytest.fixture
 def spidercls() -> type[Baze]:
-    """To be defined per testmodule."""
+    """To be defined per testcase."""
     raise NotImplementedError
 
 
@@ -111,33 +92,37 @@ def testcase_dir() -> str | Path:
 def yamlargs(spidercls: type[Baze], testcase_dir: str | Path) -> dict[str, Any]:
     logging.debug("Running yamlargs fixture")
     yamlpath = Path("tests/data") / spidercls.name / testcase_dir / USED_ARGS_FILENAME
-    yamlargs = get_yamldict_key(yamlpath, spidercls.name, doraise=True)
-    print(f"yamlargs from {yamlpath}:")
+    yamlcontents = read_yaml(yamlpath)
+    keys, yamlargs = nested_dict_get(yamlcontents, spidercls.name, raise_on_error=True)
+    print(f"Yamlargs from {yamlpath} under {keys}:")
     print(f"{yamlargs}")
     return yamlargs
 
 
+class ResultGatherer:
+    items_scraped: list[Any] = []
+    spider_settings: dict[str, Any] = {}
+
+    def open_spider(self, spider):
+        self.spider_settings = spider.settings
+
+    def process_item(self, item, spider):
+        self.items_scraped.append(item)
+        return item
+
+
 @pytest.fixture(scope="function")  # reset items_scraped after each test
-def gatherercls():
+def gatherercls() -> type[ResultGatherer]:
     logging.debug("Running gatherercls fixture")
-
-    class ResultGatherer:
-        items_scraped = []
-        spider_settings = {}
-
-        def open_spider(self, spider):
-            self.spider_settings = spider.settings
-
-        def process_item(self, item, spider):
-            self.items_scraped.append(item)
-            return item
-
     return ResultGatherer
 
 
 @pytest.fixture
-def configure_spidercls(
-    spidercls: Baze, yamlargs, gatherercls, request: pytest.FixtureRequest
+def configured_spidercls[T: Baze](
+    spidercls: type[T],
+    yamlargs: dict[str, Any],
+    gatherercls: type[ResultGatherer],
+    request: pytest.FixtureRequest,
 ):
     """Configure spidercls for testing.
 
@@ -145,6 +130,9 @@ def configure_spidercls(
     testmodule and/or modify the spidercls fixture itself.
     """
     logging.debug("Running configure_spidercls fixture")
+    # configure scrapy logging levels
+    configure_scrapy_logging_levels()
+
     # get spidercls config (can be defined at testcase level, should precede others)
     _settings = spidercls._settings
     _spiderargs = spidercls._spiderargs
@@ -177,10 +165,14 @@ def configure_spidercls(
     # apply config
     spidercls._settings = {**yaml_settings, **TESTING_SETTINGS, **_settings}
     spidercls._spiderargs = {**yaml_spiderargs, **TESTING_SPIDERARGS, **_spiderargs}
-    logging.debug(f"Configuration:\n{spidercls._settings}\n{spidercls._spiderargs}")
-    yield
+    yield spidercls
     spidercls._settings = {}
     spidercls._spiderargs = {}
-    print("Test failed!" if request.node.rep_call.failed else "Test passed!")
-    if out_dir.is_file():
-        print(f"Out dir: {out_dir}")
+    try:
+        request.node.rep_call.failed
+    except AttributeError:
+        print("Test passed!")
+        if out_dir.is_file():
+            print(f"Out dir: {out_dir}")
+    else:
+        print("Test failed!")

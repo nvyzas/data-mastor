@@ -1,10 +1,12 @@
 import os
 import socket
 import subprocess
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Self
+from typing import Self, cast
 
 import psutil
+from itemadapter import ItemAdapter
 from scrapy import Request, Spider, signals
 from scrapy.http import Response
 
@@ -16,6 +18,9 @@ ENVVAR_NO_UA_TEST = "NO_UA_CHECK"
 ENVVAR_ALLOWED_INTERFACE = "ALLOWED_INTERFACE"
 ENVVAR_PROXY_LEAKTEST_SCRIPT = "PROXY_LEAKTEST_SCRIPT"
 ENVVAR_LEAKTEST_SCRIPT = "LEAKTEST_SCRIPT"
+
+NO_UA_CHECK_WARNING = "User-agent header check is off!"
+NO_LEAK_TEST_WARNING = "DNS leak test is disabled!"
 
 
 # dns leak test utility function
@@ -58,7 +63,7 @@ def _interface_ip(interface_name) -> str:
 
 
 # utility function to get interface up/down status
-def _interface_is_up(interface_name) -> bool:
+def _interface_is_up(interface_name: str) -> bool:
     interfaces = psutil.net_if_stats()
     if interface_name in interfaces:
         return interfaces[interface_name].isup
@@ -74,12 +79,12 @@ def _interface_is_up(interface_name) -> bool:
 class PrivacyCheckerDlMw:
     @classmethod
     def from_crawler(cls, crawler) -> Self:
-        dlmw = cls()
-        crawler.signals.connect(dlmw.spider_opened, signal=signals.spider_opened)
-        return dlmw
+        mw = cls()
+        crawler.signals.connect(mw.spider_opened, signal=signals.spider_opened)
+        return mw
 
     def process_request(self, request: Request, spider: Spider):
-        # Check the User-Agent header
+        # check the User-Agent header
         if self._check_ua:
             ua = request.headers.get("User-Agent")
             if ua is None:
@@ -90,13 +95,10 @@ class PrivacyCheckerDlMw:
                     abort(spider, f"User-Agent header '{ua_str}' is not permitted")
 
         # set proxy/bindaddress
-        if self.proxy_ip:
-            request.meta["proxy"] = self.proxy_ip
-            if self.interface_ip:
-                msg = "Both 'proxy' and 'bindaddress' are set. Ignoring bindaddress"
-                spider.logger.warning(msg)
-        elif self.interface_ip:
-            request.meta["bindaddress"] = self.interface_ip
+        if self._proxy_ip:
+            request.meta["proxy"] = self._proxy_ip
+        elif self._interface_ip:
+            request.meta["bindaddress"] = self._interface_ip
         spider.logger.debug(f"request.meta={request.meta}")
 
         # Must either:
@@ -132,154 +134,119 @@ class PrivacyCheckerDlMw:
         # user-agent check
         self._check_ua = not os.environ.get(ENVVAR_NO_UA_TEST, False)
         if not self._check_ua:
-            spider.logger.warning("User-agent header check is off!")
+            spider.logger.warning(NO_UA_CHECK_WARNING)
 
-        # Initialize proxy and interface IP attributes
-        self.proxy_ip = ""
-        self.interface_ip = ""
+        # set proxy ip
+        self._proxy_ip = os.environ.get(ENVVAR_PROXY_IP)
+
+        # allowed interface check
+        iface = os.environ.get(ENVVAR_ALLOWED_INTERFACE)
+        if not self._proxy_ip and iface:
+            # check if interface is up
+            try:
+                is_up = _interface_is_up(iface)
+            except Exception as exc:
+                abort(spider, exc)
+                raise  # for type-checker/readabilty
+            if not is_up:
+                abort(spider, f"Allowed interface ({iface}) is down")
+            # get interface ip
+            try:
+                interface_ip = _interface_ip(iface)
+            except Exception as exc:
+                abort(spider, exc)
+                raise  # for type-checker/readability
+            if not interface_ip:
+                abort(spider, f"Allowed interface ({iface}) has no ip")
+            self._interface_ip = interface_ip
 
         # leaktest
-        _do_leaktest = not os.environ.get(ENVVAR_NO_LEAK_TEST, False)
-        if not _do_leaktest:
-            spider.logger.warning("DNS leak test is disabled!")
-        # check proxy
-        proxy_ip = os.environ.get(ENVVAR_PROXY_IP)
-        if proxy_ip:
-            leaktest_script = os.environ.get(
-                ENVVAR_PROXY_LEAKTEST_SCRIPT, "leaktest.sh"
-            )
-            # check for leaks
-            if _do_leaktest and _is_leaking(leaktest_script):
-                spider.logger.warning("Proxy dnsleak test failed!")
-            else:
-                self.proxy_ip = proxy_ip
+        if os.environ.get(ENVVAR_NO_LEAK_TEST, False):
+            spider.logger.warning(NO_LEAK_TEST_WARNING)
+            return
 
-        # check regular network interface
-        if not self.proxy_ip:
-            # check interface
-            interface = os.environ.get(ENVVAR_ALLOWED_INTERFACE)
-            if interface:
-                # REF split up try/except blocks
-                try:
-                    is_up = _interface_is_up(interface)
-                    interface_ip = _interface_ip(interface)
-                except ValueError as exc:
-                    abort(spider, f"{exc}")
-                else:
-                    if not is_up:
-                        abort(spider, f"Allowed interface '{interface}' is down")
-                    if not interface_ip:
-                        abort(spider, f"Allowed interface '{interface}' has no ip")
-                    self.interface_ip = interface_ip
-            # check for leaks
-            leaktest_script = os.environ.get(ENVVAR_LEAKTEST_SCRIPT, "leaktest.sh")
-            if _do_leaktest and _is_leaking(leaktest_script):
-                abort(spider, "Dnsleak test failed!")
+        # perform the test to the proxy / allowed interface
+        if self._proxy_ip:
+            script_var = ENVVAR_PROXY_LEAKTEST_SCRIPT
+        else:
+            script_var = ENVVAR_LEAKTEST_SCRIPT
+        script = os.environ.get(script_var, "leaktest.sh")
+        if _is_leaking(script):
+            abort(spider, "Dns leak test failed!")
 
 
 class ResponseSaverSpMw:
-    """Spider-agnostic spider middleware to save HTML responses to files.
-
-    This middleware saves HTML responses to disk when enabled via the SAVE_HTML setting.
-    It requires the OUT_DIR setting to be configured and will abort if it's not set.
+    """Saves HTML responses to disk when enabled via the SAVE_HTML setting.
 
     For spiders in local mode (scraping from local files), this middleware also rewrites
     Request URLs to point to the saved local HTML files instead of the original URLs.
-
-    Configuration:
-        Enable in settings.py or custom_settings:
-
-        SPIDER_MIDDLEWARES = {
-            'data_mastor.scraper.middlewares.ResponseSaverDLMW': 950,
-        }
-
-        # Required: configure output directory
-        OUT_DIR = 'path/to/output'
-
-        # Optional: enable HTML saving (default: False)
-        SAVE_HTML = True
     """
 
-    @staticmethod
-    def _generate_filename(url: str) -> str:
-        """Generate a filename from a URL.
+    # SOMEDAY make these into settings
+    SUFFIXES = ["_page"]
+    SUFFIX = "_pg"
 
-        Args:
-            url: The URL string
+    def __init__(self, save_html: bool, out_dir: Path | None) -> None:
+        self.save_html = save_html
+        if out_dir is None:
+            raise ValueError("save_html is enabled but out_dir is None")
+        self.out_dir = out_dir
+        self.in_dir: Path | None = None
 
-        Returns:
-            A safe filename for saving the HTML content
-        """
-        if url.startswith("file://"):
-            # For local files, use the filename
-            return Path(url.replace("file://", "")).name
-        else:
-            # For web URLs, create a safe filename from the last part of URL
-            parts = url.rstrip("/").split("/")
-            filename = parts[-1] if parts else "response"
-            # Remove query parameters and ensure .html extension
-            filename = filename.split("?")[0]
-            if not filename.endswith(".html"):
-                filename += ".html"
-            return filename
+    @classmethod
+    def from_crawler(cls, crawler) -> Self:
+        save_html = crawler.settings.getbool("SAVE_HTML", False)
+        out_dir = Path(crawler.settings.get("OUT_DIR", None))
+        mw = cls(save_html, out_dir)
+        crawler.signals.connect(mw.spider_opened, signal=signals.spider_opened)
+        return mw
 
-    @staticmethod
-    def _is_local_mode(spider: Spider) -> bool:
-        """Check if spider is in local mode (scraping from local files).
+    def spider_opened(self, spider: Spider):
+        spider.logger.info("ResponseSaver: Spider opened: %s" % spider.name)
+        # check out_dir
+        out_dir = Path(spider.crawler.settings.get("OUT_DIR"))
+        if self.save_html:
+            try:
+                out_dir.mkdir(parents=True, exist_ok=True)
+            except Exception as exc:
+                abort(spider, exc)
+        # set in_dir if scraping local file
+        if (u := spider.start_urls[0]) and u.startswith("file://"):
+            in_dir_str = "/".join(u.replace("file://", "").rstrip("/").split("/")[:-1])
+            self.in_dir = Path(in_dir_str)
 
-        Args:
-            spider: The spider instance
+    # used for both reading and writing
+    def _html_filename(self, url: str) -> str:
+        # get the last part of the url (local or not)
+        tip = url.rstrip("/").split("/")[-1]
+        # replace forbidden filename characters
+        filename = tip.replace("?", "_").replace("=", "")
+        # remove ".html" (could be in the middle of local urls)
+        filename = filename.replace(".html", "")
+        # keep a single unified suffix
+        for suffix in self.SUFFIXES:
+            filename = filename.replace(suffix, self.SUFFIX)
+        # for local urls
+        page_split = filename.split(self.SUFFIX)
+        if len(page_split) > 2:
+            filename = page_split[0] + self.SUFFIX + page_split[-1]
+        return filename + ".html"
 
-        Returns:
-            True if at least one start_url starts with 'file://', False otherwise
-        """
-        start_urls = getattr(spider, "start_urls", [])
-        return any(url.startswith("file://") for url in start_urls)
-
-    def process_spider_output(self, response: Response, result, spider: Spider):
-        """Process spider output, saving HTML and rewriting URLs for local mode.
-
-        Args:
-            response: The response being processed
-            result: An iterable of Request and/or Item objects
-            spider: The spider instance
-
-        Yields:
-            Request and/or Item objects from result, with Request URLs rewritten
-            to local file paths if in local mode
-        """
-        # Check if we should save HTML
-        save_html = spider.settings.getbool("SAVE_HTML", False)
-
-        saved_file_path = None
-        if save_html:
-            # Get output directory from settings - abort if not set
-            out_dir = spider.settings.get("OUT_DIR")
-            if not out_dir:
-                abort(spider, "OUT_DIR setting is required for ResponseSaverDLMW")
-
-            # Convert to Path if needed
-            out_dir = Path(out_dir)
-
-            # Ensure directory exists
-            out_dir.mkdir(parents=True, exist_ok=True)
-
-            # Generate filename from URL
-            html_file = self._generate_filename(response.url)
-
-            # Save the response body
-            saved_file_path = out_dir / html_file
-            with open(saved_file_path, "wb") as file:
+    def process_spider_output(
+        self,
+        response: Response,
+        result: Iterable[Request | ItemAdapter],
+        spider: Spider,
+    ):
+        # Save response as html (if SAVE_HTML is true
+        if self.save_html:
+            html_path = self.out_dir / self._html_filename(response.url)
+            with open(html_path, "wb") as file:
                 file.write(response.body)
 
-        # Check if we're in local mode
-        is_local_mode = self._is_local_mode(spider)
-
-        # Process the result
+        # yield items or Redirect requests to a previously saved html file (if in local mode)
         for item in result:
-            # If in local mode and item is a Request, rewrite URL to local file
-            if is_local_mode and isinstance(item, Request) and saved_file_path:
-                # Rewrite the request URL to point to the saved local file
-                item = item.replace(url=f"file://{saved_file_path.absolute()}")
-
+            if response.url.startswith("file://") and isinstance(item, Request):
+                html_path = cast(Path, self.in_dir) / self._html_filename(item.url)
+                item = item.replace(url=f"file://{html_path.absolute()}")
             yield item
