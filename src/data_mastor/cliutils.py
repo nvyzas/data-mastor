@@ -219,7 +219,15 @@ def read_yaml(path: str | Path):
 
 
 def app_with_yaml_support(app: Typer) -> Typer:
-    logger = logging.getLogger(app.info.name)
+    logger = logging.getLogger("cliyamlsuport")
+    logger.setLevel(logging.INFO)
+    if not logger.handlers:
+        h = logging.StreamHandler()
+        h.setLevel(logging.DEBUG)
+        h.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+        )
+        logger.addHandler(h)
 
     def parse_args_from_yaml(
         ctx: Context,
@@ -227,7 +235,8 @@ def app_with_yaml_support(app: Typer) -> Typer:
         yaml: bool = True,
         debug: bool = False,
     ) -> dict[str, Any]:
-        logger.setLevel(logging.DEBUG if debug else logging.INFO)
+        if debug:
+            logger.setLevel(logging.DEBUG)
         if not yaml:
             logger.warning("Yaml support is disabled. Assuming no yamlargs")
             return {}
@@ -268,8 +277,8 @@ def app_with_yaml_support(app: Typer) -> Typer:
                 except Exception as exc:
                     logger.warning(f"{cmdstr}Could not read yamlargs because of {exc}")
                 else:
-                    logging.debug(f"{cmdstr}Using args from keys {used_keys}:")
-                    logging.debug(args)
+                    logger.info(f"{cmdstr}Using args from keys {used_keys}:")
+                    logger.info(args)
                 ignored = [invoked] if (invoked := cmd) else []
                 debug = ctx.meta[CTX_META_KEY_DEBUG]
                 updated = update_kwargs_from_context(
@@ -278,11 +287,13 @@ def app_with_yaml_support(app: Typer) -> Typer:
                 kwargs.update(updated)
                 unspecified = {k: v for k, v in updated.items() if k not in kwargs}
                 ctx.meta[CTX_META_KEY_UNSPECIFIED][keys[-1]] = unspecified
+            else:
+                logger.info("No yaml args to use")
 
             kw = {k: v for k, v in kwargs.items() if k in params}
             if func_ctx_args:
                 kw[func_ctx_args[0]] = ctx
-            logging.debug(f"Running wrapped {func.__name__} with {kw}")
+            logger.debug(f"Running wrapped {func.__name__} with {kw}")
             func(**kw)
 
         exclude = {func_ctx_args[0]: [func]} if func_ctx_args else None
@@ -317,7 +328,7 @@ def app_with_yaml_support(app: Typer) -> Typer:
     else:
         app.callback()(parse_args_from_yaml)
         if len(app.registered_commands) == 0:
-            logging.warning("Typer has no commands, nor callback")
+            logger.warning("Typer has no commands, nor callback")
     return app
 
 

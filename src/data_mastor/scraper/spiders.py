@@ -258,7 +258,7 @@ class Baze(Spider):
                 for k, v in spider.settings.items()
                 if spider.settings.getpriority(k) == SETTINGS_PRIORITIES["cmdline"]
             }
-            # update used args dict with (cli) spiderargs
+            # update used args dict with cli spiderargs
             used_args.update(kwargs)
             # write to yaml file
             with open(out_dir / USED_ARGS_FILENAME, "w") as file:

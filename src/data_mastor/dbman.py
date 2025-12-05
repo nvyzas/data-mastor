@@ -40,11 +40,11 @@ def _get_declarative_base_class() -> type[DeclarativeBase]:
     module = _import_extension_module()
     keys = ["Base"] + [_ for _ in dir(module) if not _.startswith("__")]
     for k in keys:
-        attr = getattr(module, k)
+        attr = getattr(module, k, None)
+        if not isinstance(attr, type) or not issubclass(attr, DeclarativeBase):
+            continue
         if not hasattr(attr, "metadata"):
             continue
-        if isinstance(attr, type) and issubclass(attr, DeclarativeBase):
-            return attr
     raise RuntimeError(f"There is no declarative base class for the model in {module}")
 
 

@@ -71,7 +71,8 @@ class Storer[TEntity: Base, TItem: ListingItem | SourceItem]:
         if not samples:
             spider.logger.warning("Spider does not provide any samples for testing")
             return
-        # perform test
+        # process samples
+        spider.logger.info(f"Processing test samples: {samples}")
         for item in samples:
             try:
                 self.process_item(item, spider)
@@ -86,7 +87,6 @@ class Storer[TEntity: Base, TItem: ListingItem | SourceItem]:
     def open_spider(self, spider: Spider) -> None:
         spider.logger.debug(f"Running {type(self).__name__} open_spider")
         self._log_num_entities(spider)
-
         # simulate item processing using samples (before doing the actual scraping)
         self._process_samples(spider)
 
