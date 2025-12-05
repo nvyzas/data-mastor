@@ -93,7 +93,7 @@ def yamlargs(spidercls: type[Baze], testcase_dir: str | Path) -> dict[str, Any]:
     logging.debug("Running yamlargs fixture")
     yamlpath = Path("tests/data") / spidercls.name / testcase_dir / USED_ARGS_FILENAME
     yamlcontents = read_yaml(yamlpath)
-    keys, yamlargs = nested_dict_get(yamlcontents, spidercls.name, raise_on_error=True)
+    keys, yamlargs = nested_dict_get(yamlcontents, raise_on_error=True)
     print(f"Yamlargs from {yamlpath} under {keys}:")
     print(f"{yamlargs}")
     return yamlargs

@@ -1,6 +1,7 @@
 import random
 import traceback
 from collections.abc import Callable, Mapping, Sequence, Set
+from copy import deepcopy
 from enum import StrEnum
 from functools import partial
 from inspect import Parameter, Signature, signature
@@ -383,6 +384,7 @@ def nested_dict_get(
     debug_on_error: bool = False,
     expected_ret_cls: Any = dict,
 ) -> tuple[list[str], Any]:
+    dict_ = deepcopy(dict_)
     if keys is None:
         keys = []
     elif isinstance(keys, str):
@@ -395,7 +397,7 @@ def nested_dict_get(
             else:
                 if debug_on_error:
                     print(f"WARNING: {msg}")
-                return keys[:i], expected_ret_cls()
+                return keys[:i], dict_
         if key not in dict_.keys():
             msg = f"Dict under keys {keys[:i]} has no key '{key}'"
             if raise_on_error:
@@ -403,7 +405,7 @@ def nested_dict_get(
             else:
                 if debug_on_error:
                     print(f"WARNING: {msg}")
-                return keys[:i], expected_ret_cls()
+                return keys[:i], dict_
         dict_ = dict_[key]
     if trace_unknown_keys:
         unknown_keys = []
@@ -425,5 +427,5 @@ def nested_dict_get(
         else:
             if debug_on_error:
                 print(f"WARNING: {msg}")
-            return keys, expected_ret_cls()
+            return keys, dict_
     return keys, dict_

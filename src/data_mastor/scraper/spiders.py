@@ -429,7 +429,10 @@ class Baze(Spider):
         3) Spider-specific arguments that offer help, validation, and default values\n.
         """
         app = typer.Typer(
-            name=cls._cli_cmdname(), help=helpstr, invoke_without_command=True
+            name=cls._cli_cmdname(),
+            help=helpstr,
+            invoke_without_command=True,
+            add_completion=False,
         )
 
         # create a wrapper function so that we can give it a __signature__
