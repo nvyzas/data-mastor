@@ -1,3 +1,4 @@
+import warnings
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -214,11 +215,9 @@ class Baze(Spider):
         dlmw_base = spider.settings[DLMWBASE_KEY]
         dlmw = spider.settings[DLMW_KEY]
         spmw = spider.settings[SPMW_KEY]
-
         # apply ResponseSaver (Spider Middleware)
         if spider.local_mode or spider.save_html:
             spmw[ResponseSaverSpMw] = 950
-
         # apply PrivacyChecker (Downloader Middleware)
         if not spider.local_mode:
             pos = between_middlewares(
@@ -230,7 +229,6 @@ class Baze(Spider):
                 ],
             )
             dlmw[PrivacyCheckerDlMw] = pos
-
         # effectively disable OffsiteDownloadMiddleware
         if spider.local_mode:
             cls.allowed_domains = []
@@ -249,7 +247,7 @@ class Baze(Spider):
             map(lambda p: _pathstr(p).startswith(str(out_dir)), feedpaths)
         )
         #
-        if spider.save_html or log_to_out_dir or feeds_to_out_dir:
+        if log_to_out_dir or feeds_to_out_dir:
             out_dir.mkdir(parents=True, exist_ok=False)
             print(f"Created out dir: {out_dir}")
             # initialize used args dict with cli settings
@@ -341,7 +339,7 @@ class Baze(Spider):
 
     @classmethod
     def _cli_full(cls, ctx: typer.Context, **kwargs) -> None:
-        print("Running _cli_full")
+        print("Running '_cli_full'")
         for cm in [cls._cli_basic, cls._cli_sub, cls._cli]:
             kw = {k: v for k, v in kwargs.items() if k in cm.__annotations__}
             if "ctx" in cm.__annotations__:
@@ -368,7 +366,7 @@ class Baze(Spider):
 
         # unused args
         if kwargs:
-            print(f"WARNING: There are remaining (unused) args: {kwargs}")
+            warnings.warn(f"There are remaining args (to be ignored): {kwargs}")
             kwargs = {}
 
         # delete not-explicitly-given settings
@@ -407,7 +405,7 @@ class Baze(Spider):
         if cls._test_cli:
             print("End of cli-test")
             raise typer.Exit()
-        print("Running main")
+        print("Running 'main'")
         cls.main()
 
     @classmethod
@@ -502,20 +500,24 @@ class Meta(type):
         else:
             info_file = Path(c.__dict__["info_file"])
 
-        if not info_file.is_file():
-            return c
         codename = name[:-3].lower()
-        info_contents = read_yaml(info_file)
-        _, info = nested_dict_get(info_contents, [codename], raise_on_error=False)
+        info_contents = read_yaml(info_file) if info_file.is_file() else {}
+        _, info = nested_dict_get(
+            info_contents,
+            expected_ret_cls=dict[str, Any],
+            keys=[codename],
+            raise_on_error=False,
+            warn_on_error=False,
+        )
+        # info = cast(dict[str, Any], info)  # help mypy
         spider_info = info.get(spidertype.lower(), {})
         # set custom classvars: shop name, html_fields
-        setattr(c, "shop", info.get("name", codename))
+        setattr(c, "shop", info.get("shop", codename))
         setattr(c, "fields", spider_info.get("fields", {}))
         # set scrapy classvars: spider name, start_urls, allowed_domains
         setattr(c, "name", codename + "_" + spidertype.lower())
         setattr(c, "start_urls", spider_info.get("start_urls", []))
         setattr(c, "allowed_domains", spider_info.get("allowed_domains", []))
-
         return c
 
 

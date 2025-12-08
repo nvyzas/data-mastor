@@ -1,12 +1,13 @@
 import random
 import traceback
+import warnings
 from collections.abc import Callable, Mapping, Sequence, Set
 from copy import deepcopy
 from enum import StrEnum
 from functools import partial
 from inspect import Parameter, Signature, signature
 from types import ModuleType
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, TypeVar, overload
 from unittest.mock import MagicMock, Mock
 
 from click.testing import Result
@@ -376,56 +377,83 @@ def assert_result_exit_code(result: Result, exit_code=0):
 # MISC
 
 
+@overload
 def nested_dict_get(
     dict_: dict[str, Any],
+    expected_ret_cls: None,
     keys: list[str] | str | None = None,
     trace_unknown_keys: bool = False,
     raise_on_error: bool = True,
-    debug_on_error: bool = False,
-    expected_ret_cls: Any = dict,
+    warn_on_error: bool = False,
+) -> tuple[list[str], Any]: ...
+@overload
+def nested_dict_get(
+    dict_: dict[str, Any],
+    expected_ret_cls: type[dict[str, Any]] = dict,
+    keys: list[str] | str | None = None,
+    trace_unknown_keys: bool = False,
+    raise_on_error: bool = True,
+    warn_on_error: bool = False,
+) -> tuple[list[str], dict[str, Any]]: ...
+@overload
+def nested_dict_get[T](
+    dict_: dict[str, Any],
+    expected_ret_cls: type[T],
+    keys: list[str] | str | None = None,
+    trace_unknown_keys: bool = False,
+    raise_on_error: bool = True,
+    warn_on_error: bool = False,
+) -> tuple[list[str], T]: ...
+def nested_dict_get(
+    dict_: dict[str, Any],
+    expected_ret_cls: type | None = dict,
+    keys: list[str] | str | None = None,
+    trace_unknown_keys: bool = False,
+    raise_on_error: bool = True,
+    warn_on_error: bool = True,
 ) -> tuple[list[str], Any]:
-    dict_ = deepcopy(dict_)
+    ret: Any = deepcopy(dict_)
     if keys is None:
         keys = []
     elif isinstance(keys, str):
         keys = [keys]
     for i, key in enumerate(keys):
-        if not isinstance(dict_, dict):
+        if not isinstance(ret, dict):
             msg = f"Object under keys {keys[:i]} is not a dictionary"
             if raise_on_error:
                 raise TypeError(msg)
             else:
-                if debug_on_error:
-                    print(f"WARNING: {msg}")
-                return keys[:i], dict_
-        if key not in dict_.keys():
+                if warn_on_error:
+                    warnings.warn(f"{msg}", stacklevel=2)
+                return keys, (expected_ret_cls() if expected_ret_cls else None)
+        if key not in ret.keys():
             msg = f"Dict under keys {keys[:i]} has no key '{key}'"
             if raise_on_error:
                 raise KeyError(msg)
             else:
-                if debug_on_error:
-                    print(f"WARNING: {msg}")
-                return keys[:i], dict_
-        dict_ = dict_[key]
+                if warn_on_error:
+                    warnings.warn(f"{msg}", stacklevel=2)
+                return keys, (expected_ret_cls() if expected_ret_cls else None)
+        ret = ret[key]
     if trace_unknown_keys:
         unknown_keys = []
         while True:
-            if not isinstance(dict_, dict):
+            if not isinstance(ret, dict):
                 break
-            marked_keys = [k for k in dict_ if "!" in k]
+            marked_keys = [k for k in ret if "!" in k]
             if len(marked_keys) > 1:
                 raise KeyError(f"There are multiple marked keys ({marked_keys})")
             if len(marked_keys) == 0:
                 break
             unknown_keys.append(marked_keys[0])
-            dict_ = dict_[unknown_keys[-1]]
+            ret = ret[unknown_keys[-1]]
         keys += unknown_keys
-    if not issubclass(type(dict_), expected_ret_cls):
-        msg = f"Returned obj ({dict_}) is not of expected class ({expected_ret_cls})"
+    if expected_ret_cls and not issubclass(type(ret), expected_ret_cls):
+        msg = f"Returned obj ({ret}) is not of expected class ({expected_ret_cls})"
         if raise_on_error:
             raise TypeError(msg)
         else:
-            if debug_on_error:
-                print(f"WARNING: {msg}")
-            return keys, dict_
-    return keys, dict_
+            if warn_on_error:
+                warnings.warn(f"{msg}", stacklevel=2)
+            return keys, expected_ret_cls()
+    return keys, ret

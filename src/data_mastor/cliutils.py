@@ -1,5 +1,5 @@
 import copy
-import logging
+import warnings
 from collections.abc import Callable, Sequence
 from functools import partial, wraps
 from inspect import Signature, signature
@@ -205,7 +205,6 @@ def update_kwargs_from_context(
 # YAML
 
 # SOMEDAY make these env vars
-ARGS_YAMLPATH = "args.yml"
 CTX_META_KEY_YAMLARGS = "yamlargs"
 CTX_META_KEY_UNSPECIFIED = "unspecified"
 CTX_META_KEY_DEBUG = "debug"
@@ -219,41 +218,31 @@ def read_yaml(path: str | Path):
 
 
 def app_with_yaml_support(app: Typer) -> Typer:
-    logger = logging.getLogger("cliyamlsuport")
-    logger.setLevel(logging.INFO)
-    if not logger.handlers:
-        h = logging.StreamHandler()
-        h.setLevel(logging.DEBUG)
-        h.setFormatter(
-            logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
-        )
-        logger.addHandler(h)
-
     def parse_args_from_yaml(
         ctx: Context,
-        yamlpath: Path = Path(ARGS_YAMLPATH),
+        yamlpath: Annotated[Path, Option(envvar="ARGS_YAMLPATH")] = Path("args.yml"),
         yaml: bool = True,
         debug: bool = False,
     ) -> dict[str, Any]:
-        if debug:
-            logger.setLevel(logging.DEBUG)
+        ctx.meta[CTX_META_KEY_DEBUG] = debug
         if not yaml:
-            logger.warning("Yaml support is disabled. Assuming no yamlargs")
+            warnings.warn("Yaml support is disabled. Assuming no yamlargs")
             return {}
         # read yaml file
         try:
             yamlargs = read_yaml(yamlpath)
         except Exception as exc:
-            logger.warning(f"Failed to read yaml due to {exc}. Assuming no yamlargs")
+            warnings.warn(f"Failed to read yaml due to {exc}. Assuming no yamlargs")
             return {}
+        else:
+            print(f"Successfully read yamlargs file {yamlpath}")
         # check result
         if not isinstance(yamlargs, dict):
-            logger.warning(f"Yaml args {yamlargs} is not a dict. Assuming no yamlargs")
+            warnings.warn(f"Yaml args {yamlargs} is not a dict. Assuming no yamlargs")
             return {}
         # store in ctx
         ctx.meta[CTX_META_KEY_YAMLARGS] = yamlargs
         ctx.meta[CTX_META_KEY_UNSPECIFIED] = {}
-        ctx.meta[CTX_META_KEY_DEBUG] = debug
         return yamlargs
 
     def with_updated_kwargs(func):
@@ -264,21 +253,24 @@ def app_with_yaml_support(app: Typer) -> Typer:
 
         @wraps(func)
         def wrapper(ctx: Context, **kwargs):
-            logger.debug(f"Running wrapper of {func.__name__} with {ctx} and {kwargs}")
+            debug = ctx.meta[CTX_META_KEY_DEBUG]
+            if debug:
+                print(f"Running wrapper of {func.__name__} with {ctx} and {kwargs}")
             if yamlargs := ctx.meta.get(CTX_META_KEY_YAMLARGS):
                 cmd = ctx.invoked_subcommand
-                cmdstr = f"On subcmd={cmd}: " if cmd else ""
+                cmdstr = f"On subcommand '{cmd}': " if cmd else ""
                 keys = ctx.command_path.replace(".py", "").split(" ")
                 args: dict[str, Any] = {}
                 try:
                     used_keys, args = nested_dict_get(
-                        yamlargs, keys=keys, raise_on_error=False
+                        yamlargs, expected_ret_cls=dict, raise_on_error=False, keys=keys
                     )
                 except Exception as exc:
-                    logger.warning(f"{cmdstr}Could not read yamlargs because of {exc}")
+                    warnings.warn(f"{cmdstr}No yaml args under keys {keys} ({exc})")
                 else:
-                    logger.info(f"{cmdstr}Using args from keys {used_keys}:")
-                    logger.info(args)
+                    if debug:
+                        print(f"{cmdstr}Yaml args under keys {used_keys}:")
+                        print(args)
                 ignored = [invoked] if (invoked := cmd) else []
                 debug = ctx.meta[CTX_META_KEY_DEBUG]
                 updated = update_kwargs_from_context(
@@ -287,13 +279,12 @@ def app_with_yaml_support(app: Typer) -> Typer:
                 kwargs.update(updated)
                 unspecified = {k: v for k, v in updated.items() if k not in kwargs}
                 ctx.meta[CTX_META_KEY_UNSPECIFIED][keys[-1]] = unspecified
-            else:
-                logger.info("No yaml args to use")
 
             kw = {k: v for k, v in kwargs.items() if k in params}
             if func_ctx_args:
                 kw[func_ctx_args[0]] = ctx
-            logger.debug(f"Running wrapped {func.__name__} with {kw}")
+            if debug:
+                print(f"Running wrapped {func.__name__} with {kw}")
             func(**kw)
 
         exclude = {func_ctx_args[0]: [func]} if func_ctx_args else None
@@ -328,7 +319,7 @@ def app_with_yaml_support(app: Typer) -> Typer:
     else:
         app.callback()(parse_args_from_yaml)
         if len(app.registered_commands) == 0:
-            logger.warning("Typer has no commands, nor callback")
+            warnings.warn("Typer has no commands, nor callback")
     return app
 
 
